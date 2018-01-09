@@ -8,6 +8,7 @@
     using System.Runtime.InteropServices;
     using System.Windows;
     using System.Windows.Interop;
+    using System.Windows.Threading;
 
     internal sealed class SharedMemoryBitmap : IDisposable
     {
@@ -69,16 +70,20 @@
             if (AllocateBuffer(block.BufferLength) == false && RenderBitmapSource != null)
                 return;
 
-            RenderBitmapSource = Imaging.CreateBitmapSourceFromMemorySection(
-                Scan0,
-                block.PixelWidth,
-                block.PixelHeight,
-                MediaPixelFormats[Defaults.VideoPixelFormat],
-                block.BufferStride,
-                0) as InteropBitmap;
+            // Create the bitmap source on the GUI thread.
+            // http://dedjo.blogspot.mx/2008/03/how-to-high-performance-graphics-in-wpf.html
+            WindowsPlatform.Instance.Gui.Invoke(DispatcherPriority.Normal, () => {
+                RenderBitmapSource = Imaging.CreateBitmapSourceFromMemorySection(
+                    Scan0,
+                    block.PixelWidth,
+                    block.PixelHeight,
+                    MediaPixelFormats[Defaults.VideoPixelFormat],
+                    block.BufferStride,
+                    0) as InteropBitmap;
 
-            if (RenderBitmapSource.CanFreeze)
-                RenderBitmapSource.Freeze();
+                if (RenderBitmapSource.CanFreeze)
+                    RenderBitmapSource.Freeze();
+            });
         }
 
         private bool AllocateBuffer(int length)

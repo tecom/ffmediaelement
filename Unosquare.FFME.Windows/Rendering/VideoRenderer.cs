@@ -33,6 +33,8 @@
         /// </summary>
         private WriteableBitmap TargetBitmap = null;
 
+        private SharedMemoryBitmap SourceBitmap = null;
+
         /// <summary>
         /// Set when a bitmap is being written to the target bitmap
         /// </summary>
@@ -137,6 +139,8 @@
 
             IsRenderingInProgress.Value = true;
 
+            SourceBitmap.Load(block);
+
             WindowsPlatform.Instance.Gui?.EnqueueInvoke(
                 DispatcherPriority.Render,
                 new Action<VideoBlock, TimeSpan>((b, cP) =>
@@ -155,12 +159,14 @@
                         // This is equivalent to WritePixels except for all the error checking and helper method calling
                         // and therefore it should perform slightly better.
                         // // TargetBitmap.WritePixels(updateRect, b.Buffer, b.BufferLength, b.BufferStride);
-                        TargetBitmap.Lock();
-                        WindowsNativeMethods.Instance.CopyMemory(TargetBitmap.BackBuffer, b.Buffer, (uint)b.BufferLength);
-                        TargetBitmap.AddDirtyRect(updateRect);
-                        TargetBitmap.Unlock();
+                        // TargetBitmap.Lock();
+                        // WindowsNativeMethods.Instance.CopyMemory(TargetBitmap.BackBuffer, b.Buffer, (uint)b.BufferLength);
+                        // TargetBitmap.AddDirtyRect(updateRect);
+                        // TargetBitmap.Unlock();
 
-                        MediaElement.RaiseRenderingVideoEvent(b, TargetBitmap, cP);
+                        // MediaElement.RaiseRenderingVideoEvent(b, TargetBitmap, cP);
+
+                        SourceBitmap.Render();
 
                         ApplyScaleTransform(b);
                     }
@@ -225,6 +231,8 @@
                 }
 
                 MediaElement.ViewBox.Source = TargetBitmap;
+
+                SourceBitmap = new SharedMemoryBitmap(this);
             });
         }
 
