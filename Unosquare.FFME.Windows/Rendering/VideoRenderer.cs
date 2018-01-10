@@ -1,37 +1,22 @@
 ﻿namespace Unosquare.FFME.Rendering
 {
-    using FFmpeg.AutoGen;
     using Platform;
     using Primitives;
     using Shared;
     using System;
-    using System.Collections.Generic;
     using System.Runtime.CompilerServices;
-    using System.Windows;
     using System.Windows.Media;
-    using System.Windows.Media.Imaging;
     using System.Windows.Threading;
 
     /// <summary>
     /// Provides Video Image Rendering via a WPF Writable Bitmap
     /// </summary>
     /// <seealso cref="Unosquare.FFME.Shared.IMediaRenderer" />
-    internal sealed class VideoRenderer : IMediaRenderer
+    internal sealed class VideoRenderer : IMediaRenderer, IDisposable
     {
         #region Private State
 
-        /// <summary>
-        /// Contains an equivalence lookup of FFmpeg pixel fromat and WPF pixel formats.
-        /// </summary>
-        private static readonly Dictionary<AVPixelFormat, PixelFormat> MediaPixelFormats = new Dictionary<AVPixelFormat, PixelFormat>
-        {
-            { AVPixelFormat.AV_PIX_FMT_BGR0, PixelFormats.Bgr32 }
-        };
-
-        /// <summary>
-        /// The bitmap that is presented to the user.
-        /// </summary>
-        private WriteableBitmap TargetBitmap = null;
+        private bool IsDisposed = false;
 
         private SharedMemoryBitmap SourceBitmap = null;
 
@@ -51,8 +36,12 @@
         public VideoRenderer(MediaEngine mediaEngine)
         {
             MediaCore = mediaEngine;
-            InitializeTargetBitmap(null);
+            SourceBitmap = new SharedMemoryBitmap(this);
         }
+
+        #endregion
+
+        #region Properties
 
         /// <summary>
         /// Gets the parent media element (platform specific).
@@ -66,7 +55,7 @@
 
         #endregion
 
-        #region Methods
+        #region IMediaRenderer Methods
 
         /// <summary>
         /// Executed when the Play method is called on the parent MediaElement
@@ -99,9 +88,10 @@
         {
             WindowsPlatform.Instance.Gui?.Invoke(DispatcherPriority.Render, () =>
             {
-                TargetBitmap = null;
                 MediaElement.ViewBox.Source = null;
             });
+
+            Dispose();
         }
 
         /// <summary>
@@ -131,6 +121,8 @@
         {
             var block = mediaBlock as VideoBlock;
             if (block == null) return;
+
+            // Skip if rendering is currently in progress
             if (IsRenderingInProgress.Value == true)
             {
                 MediaElement?.MediaCore?.Log(MediaLogMessageType.Debug, $"{nameof(VideoRenderer)}: Frame skipped at {mediaBlock.StartTime}");
@@ -138,7 +130,6 @@
             }
 
             IsRenderingInProgress.Value = true;
-
             SourceBitmap.Load(block);
 
             WindowsPlatform.Instance.Gui?.EnqueueInvoke(
@@ -151,23 +142,7 @@
                         if (MediaElement.ScrubbingEnabled == false && MediaElement.IsPlaying == false)
                             return;
 
-                        if (TargetBitmap == null || TargetBitmap.PixelWidth != b.PixelWidth || TargetBitmap.PixelHeight != b.PixelHeight)
-                            InitializeTargetBitmap(b);
-
-                        var updateRect = new Int32Rect(0, 0, b.PixelWidth, b.PixelHeight);
-
-                        // This is equivalent to WritePixels except for all the error checking and helper method calling
-                        // and therefore it should perform slightly better.
-                        // // TargetBitmap.WritePixels(updateRect, b.Buffer, b.BufferLength, b.BufferStride);
-                        // TargetBitmap.Lock();
-                        // WindowsNativeMethods.Instance.CopyMemory(TargetBitmap.BackBuffer, b.Buffer, (uint)b.BufferLength);
-                        // TargetBitmap.AddDirtyRect(updateRect);
-                        // TargetBitmap.Unlock();
-
-                        // MediaElement.RaiseRenderingVideoEvent(b, TargetBitmap, cP);
-
                         SourceBitmap.Render();
-
                         ApplyScaleTransform(b);
                     }
                     catch (Exception ex)
@@ -196,44 +171,14 @@
 
         #endregion
 
+        #region Helper Methods and IDisposable Support
+
         /// <summary>
-        /// Initializes the target bitmap. Pass a null block to initialize with the default video properties.
+        /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
         /// </summary>
-        /// <param name="block">The block.</param>
-        private void InitializeTargetBitmap(VideoBlock block)
+        public void Dispose()
         {
-            WindowsPlatform.Instance.Gui?.Invoke(DispatcherPriority.Normal, () =>
-            {
-                var visual = PresentationSource.FromVisual(MediaElement);
-
-                var dpiX = 96.0 * visual?.CompositionTarget?.TransformToDevice.M11 ?? 96.0;
-                var dpiY = 96.0 * visual?.CompositionTarget?.TransformToDevice.M22 ?? 96.0;
-
-                var pixelWidth = block?.PixelWidth ?? MediaElement.NaturalVideoWidth;
-                var pixelHeight = block?.PixelHeight ?? MediaElement.NaturalVideoHeight;
-
-                if (MediaPixelFormats.ContainsKey(Defaults.VideoPixelFormat) == false)
-                    throw new NotSupportedException($"Unable to get equivalent pixel fromat from source: {Defaults.VideoPixelFormat}");
-
-                if (MediaElement.HasVideo && pixelWidth > 0 && pixelHeight > 0)
-                {
-                    TargetBitmap = new WriteableBitmap(
-                        block?.PixelWidth ?? MediaElement.NaturalVideoWidth,
-                        block?.PixelHeight ?? MediaElement.NaturalVideoHeight,
-                        dpiX,
-                        dpiY,
-                        MediaPixelFormats[Defaults.VideoPixelFormat],
-                        null);
-                }
-                else
-                {
-                    TargetBitmap = null;
-                }
-
-                MediaElement.ViewBox.Source = TargetBitmap;
-
-                SourceBitmap = new SharedMemoryBitmap(this);
-            });
+            Dispose(true);
         }
 
         /// <summary>
@@ -272,5 +217,23 @@
                 }
             }
         }
+
+        /// <summary>
+        /// Releases unmanaged and - optionally - managed resources.
+        /// </summary>
+        /// <param name="alsoManaged"><c>true</c> to release both managed and unmanaged resources; <c>false</c> to release only unmanaged resources.</param>
+        private void Dispose(bool alsoManaged)
+        {
+            if (!IsDisposed)
+            {
+                if (alsoManaged && SourceBitmap != null)
+                    SourceBitmap.Dispose();
+
+                SourceBitmap = null;
+                IsDisposed = true;
+            }
+        }
+
+        #endregion
     }
 }

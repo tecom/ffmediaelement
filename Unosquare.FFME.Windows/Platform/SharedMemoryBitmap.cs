@@ -1,11 +1,10 @@
-﻿namespace Unosquare.FFME.Rendering
+﻿namespace Unosquare.FFME.Platform
 {
     using FFmpeg.AutoGen;
-    using Platform;
+    using Rendering;
     using Shared;
     using System;
     using System.Collections.Generic;
-    using System.Runtime.InteropServices;
     using System.Windows;
     using System.Windows.Interop;
     using System.Windows.Threading;
@@ -27,34 +26,34 @@
         private double DpiX = DefaultDpi;
         private double DpiY = DefaultDpi;
         private InteropBitmap RenderBitmapSource = null;
-        private IntPtr Scan0 = IntPtr.Zero;
+        private SharedMemory InteropMemory = null;
         private int BufferLength = 0;
         private VideoRenderer Renderer;
 
         public SharedMemoryBitmap(VideoRenderer videoRenderer)
         {
             Renderer = videoRenderer;
-            var visual = PresentationSource.FromVisual(Renderer.MediaElement);
 
-            DpiX = DefaultDpi * visual?.CompositionTarget?.TransformToDevice.M11 ?? DefaultDpi;
-            DpiY = DefaultDpi * visual?.CompositionTarget?.TransformToDevice.M22 ?? DefaultDpi;
-        }
-
-        ~SharedMemoryBitmap()
-        {
-            Dispose(false);
+            // Get the DPI on the GUI thread
+            WindowsPlatform.Instance.Gui?.Invoke(DispatcherPriority.Normal, () =>
+            {
+                var visual = PresentationSource.FromVisual(Renderer.MediaElement);
+                DpiX = DefaultDpi * visual?.CompositionTarget?.TransformToDevice.M11 ?? DefaultDpi;
+                DpiY = DefaultDpi * visual?.CompositionTarget?.TransformToDevice.M22 ?? DefaultDpi;
+            });
         }
 
         public void Load(VideoBlock block)
         {
             EnsureLoadable(block);
-            WindowsNativeMethods.Instance.CopyMemory(Scan0, block.Buffer, (uint)block.BufferLength);
-        }
-
-        public void Dispose()
-        {
-            GC.SuppressFinalize(this);
-            Dispose(true);
+            if (InteropMemory != null)
+            {
+                WindowsNativeMethods.Instance.CopyMemory(InteropMemory.Data, block.Buffer, (uint)block.BufferLength);
+            }
+            else
+            {
+                // TODO: For some reason, sometimes IteropMemory is null? Investigate more.
+            }
         }
 
         public void Render()
@@ -65,24 +64,26 @@
             RenderBitmapSource?.Invalidate();
         }
 
+        public void Dispose()
+        {
+            Dispose(true);
+        }
+
         private void EnsureLoadable(VideoBlock block)
         {
             if (AllocateBuffer(block.BufferLength) == false && RenderBitmapSource != null)
                 return;
 
             // Create the bitmap source on the GUI thread.
-            // http://dedjo.blogspot.mx/2008/03/how-to-high-performance-graphics-in-wpf.html
-            WindowsPlatform.Instance.Gui.Invoke(DispatcherPriority.Normal, () => {
+            WindowsPlatform.Instance.Gui.Invoke(DispatcherPriority.Normal, () =>
+            {
                 RenderBitmapSource = Imaging.CreateBitmapSourceFromMemorySection(
-                    Scan0,
+                    InteropMemory.Handle,
                     block.PixelWidth,
                     block.PixelHeight,
                     MediaPixelFormats[Defaults.VideoPixelFormat],
                     block.BufferStride,
                     0) as InteropBitmap;
-
-                if (RenderBitmapSource.CanFreeze)
-                    RenderBitmapSource.Freeze();
             });
         }
 
@@ -93,7 +94,7 @@
             if (BufferLength != length)
                 DestroyBuffer();
 
-            Scan0 = Marshal.AllocHGlobal(length);
+            InteropMemory = SharedMemory.Create(length);
             BufferLength = length;
 
             return true;
@@ -101,17 +102,16 @@
 
         private void DestroyBuffer()
         {
-            if (Scan0 == null)
+            if (InteropMemory == null)
             {
                 BufferLength = 0;
                 return;
             }
 
-            Marshal.FreeHGlobal(Scan0);
+            InteropMemory.Dispose();
+            InteropMemory = null;
             BufferLength = 0;
         }
-
-        #region IDisposable Support
 
         private void Dispose(bool alsoManaged)
         {
@@ -119,19 +119,15 @@
             {
                 if (alsoManaged)
                 {
-                    // dispose managed state (managed objects).
+                    if (InteropMemory != null)
+                    {
+                        InteropMemory.Dispose();
+                    }
                 }
 
-                // Free unmanaged resources (unmanaged objects) and override a finalizer below.
-                DestroyBuffer();
-
-                // Set large fields to null.
-                RenderBitmapSource = null;
-
+                InteropMemory = null;
                 IsDisposed = true;
             }
         }
-
-        #endregion
     }
 }
