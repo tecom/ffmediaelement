@@ -118,7 +118,7 @@
             // backed by unmanaged code
             PacketReadingCycle.Dispose();
             FrameDecodingCycle.Dispose();
-            BlockRenderingCycle.Dispose();
+            RenderingWorker.Dispose();
             BufferChangedEvent.Dispose();
         }
 

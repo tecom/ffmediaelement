@@ -2,7 +2,6 @@
 {
     using Primitives;
     using Shared;
-    using System;
     using System.Linq;
     using System.Runtime.CompilerServices;
 
@@ -184,20 +183,6 @@
                 FrameDecodingCycle.Complete();
                 delay.Dispose();
             }
-        }
-
-        /// <summary>
-        /// Invalidates the last render time for the given component.
-        /// Additionally, it calls Seek on the renderer to remove any caches
-        /// </summary>
-        /// <param name="t">The t.</param>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal void InvalidateRenderer(MediaType t)
-        {
-            // This forces the rendering worker to send the
-            // corresponding block to its renderer
-            LastRenderTime[t] = TimeSpan.MinValue;
-            Renderers[t]?.Seek();
         }
 
         /// <summary>

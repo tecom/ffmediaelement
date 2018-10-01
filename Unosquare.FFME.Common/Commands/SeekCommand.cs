@@ -123,7 +123,7 @@
                     foreach (var mt in all)
                     {
                         m.Blocks[mt].Clear();
-                        m.InvalidateRenderer(mt);
+                        m.RenderingWorker.InvalidateRenderer(mt);
                     }
 
                     // Create the blocks from the obtained seek frames

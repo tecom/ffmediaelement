@@ -32,6 +32,9 @@
         /// </summary>
         private readonly object SyncLock = new object();
 
+        // Fast Last Lookup cache.
+        private readonly CachedLookupResult LookupCache = new CachedLookupResult();
+
         private bool IsNonMonotonic;
         private TimeSpan m_RangeStartTime;
         private TimeSpan m_RangeEndTime;
@@ -44,10 +47,6 @@
         private bool m_IsMonotonic;
         private bool m_IsFull;
         private bool m_IsDisposed;
-
-        // Fast Last Lookup.
-        private TimeSpan LastLookupTime = TimeSpan.MinValue;
-        private int LastLookupIndex = -1;
 
         #endregion
 
@@ -318,14 +317,20 @@
         {
             lock (SyncLock)
             {
-                if (LastLookupTime != TimeSpan.MinValue && renderTime.Ticks == LastLookupTime.Ticks)
-                    return LastLookupIndex;
+                var result = LookupCache.TryHit(renderTime);
+                if (result < 0)
+                {
+                    result = PlaybackBlocks.Count > 0 && renderTime.Ticks <= PlaybackBlocks[0].StartTime.Ticks ? 0 :
+                        PlaybackBlocks.StartIndexOf(renderTime);
 
-                LastLookupTime = renderTime;
-                LastLookupIndex = PlaybackBlocks.Count > 0 && renderTime.Ticks <= PlaybackBlocks[0].StartTime.Ticks ? 0 :
-                    PlaybackBlocks.StartIndexOf(LastLookupTime);
+                    if (result >= 0)
+                    {
+                        var block = PlaybackBlocks[result];
+                        LookupCache.Store(result, block.StartTime, block.EndTime);
+                    }
+                }
 
-                return LastLookupIndex;
+                return result;
             }
         }
 
@@ -508,8 +513,8 @@
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void UpdateCollectionProperties()
         {
-            LastLookupIndex = -1;
-            LastLookupTime = TimeSpan.MinValue;
+            // Clear cached lookups
+            LookupCache.Clear();
 
             m_Count = PlaybackBlocks.Count;
             m_RangeStartTime = PlaybackBlocks.Count == 0 ? TimeSpan.Zero : PlaybackBlocks[0].StartTime;
@@ -543,6 +548,56 @@
             m_MonotonicDuration = m_IsMonotonic ? lastBlockDuration : default;
             m_AverageBlockDuration = m_IsMonotonic ? lastBlockDuration : TimeSpan.FromTicks(
                 Convert.ToInt64(PlaybackBlocks.Average(b => Convert.ToDouble(b.Duration.Ticks))));
+        }
+
+        #endregion
+
+        #region Supporting Classes
+
+        /// <summary>
+        /// Represents a lookup cache to make repeated lookups of
+        /// the same block faster.
+        /// </summary>
+        private sealed class CachedLookupResult
+        {
+            private int Result = -1;
+
+            /// <summary>
+            /// Gets the start time.
+            /// </summary>
+            public TimeSpan StartTime { get; private set; }
+
+            /// <summary>
+            /// Gets the end time.
+            /// </summary>
+            public TimeSpan EndTime { get; private set; }
+
+            /// <summary>
+            /// Stores the specified result.
+            /// </summary>
+            /// <param name="result">The result.</param>
+            /// <param name="startTime">The start time.</param>
+            /// <param name="endTime">The end time.</param>
+            public void Store(int result, TimeSpan startTime, TimeSpan endTime)
+            {
+                StartTime = startTime;
+                EndTime = endTime;
+                Result = result;
+            }
+
+            /// <summary>
+            /// Tries a ache hit
+            /// </summary>
+            /// <param name="target">The target.</param>
+            /// <returns>-1 when not found</returns>
+            public int TryHit(TimeSpan target) =>
+                            (Result >= 0 && target.Ticks >= StartTime.Ticks && target.Ticks <= EndTime.Ticks) ?
+                                Result : -1;
+
+            /// <summary>
+            /// Clears the cached result.
+            /// </summary>
+            public void Clear() => Result = -1;
         }
 
         #endregion

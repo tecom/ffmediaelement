@@ -61,9 +61,6 @@
 
             m.Blocks.Clear();
             m.DisposePreloadedSubtitles();
-
-            // Clear the render times
-            m.LastRenderTime.Clear();
         }
 
         /// <summary>

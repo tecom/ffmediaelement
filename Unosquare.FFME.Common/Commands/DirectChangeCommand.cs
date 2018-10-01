@@ -69,7 +69,9 @@
                 m.Clock.Pause();
 
                 // Wait for the cycles to complete
-                var workerEvents = new[] { m.BlockRenderingCycle, m.PacketReadingCycle };
+                // TODO: Replace with suspend and perofrm a resume for faster changes.
+                m.RenderingWorker.WaitOne();
+                var workerEvents = new[] { m.PacketReadingCycle };
                 foreach (var workerEvent in workerEvents)
                     workerEvent.Wait();
 
@@ -139,7 +141,7 @@
 
                     // Mark the renderers as invalidated
                     foreach (var t in mediaTypes)
-                        m.InvalidateRenderer(t);
+                        m.RenderingWorker.InvalidateRenderer(t);
                 }
             }
             catch (Exception ex)

@@ -5,6 +5,7 @@
     using System;
     using System.Runtime.CompilerServices;
     using System.Threading;
+    using Workers;
 
     public partial class MediaEngine
     {
@@ -19,10 +20,8 @@
 
         private readonly AtomicBoolean m_IsSyncBuffering = new AtomicBoolean(false);
         private readonly AtomicBoolean m_HasDecodingEnded = new AtomicBoolean(false);
-        private IWaitEvent BlockRenderingWorkerExit;
         private Thread PacketReadingTask;
         private Thread FrameDecodingTask;
-        private Timer BlockRenderingWorker;
 
         /// <summary>
         /// Holds the materialized block cache for each media type.
@@ -35,6 +34,11 @@
         public MediaBlockBuffer PreloadedSubtitles { get; private set; }
 
         /// <summary>
+        /// Gets the rendering worker.
+        /// </summary>
+        internal RenderingWorker RenderingWorker { get; private set; }
+
+        /// <summary>
         /// Gets the packet reading cycle control event.
         /// </summary>
         internal IWaitEvent PacketReadingCycle { get; } = WaitEventFactory.Create(isCompleted: false, useSlim: true);
@@ -45,11 +49,6 @@
         internal IWaitEvent FrameDecodingCycle { get; } = WaitEventFactory.Create(isCompleted: false, useSlim: true);
 
         /// <summary>
-        /// Gets the block rendering cycle control event.
-        /// </summary>
-        internal IWaitEvent BlockRenderingCycle { get; } = WaitEventFactory.Create(isCompleted: false, useSlim: true);
-
-        /// <summary>
         /// Completed whenever a change in the packet buffer is detected.
         /// This needs to be reset manually and prevents high CPU usage in the packet reading worker.
         /// </summary>
@@ -57,13 +56,9 @@
 
         /// <summary>
         /// Holds the block renderers
+        /// TODO: Move this to the <see cref="RenderingWorker"/>
         /// </summary>
         internal MediaTypeDictionary<IMediaRenderer> Renderers { get; } = new MediaTypeDictionary<IMediaRenderer>();
-
-        /// <summary>
-        /// Holds the last rendered StartTime for each of the media block types
-        /// </summary>
-        internal MediaTypeDictionary<TimeSpan> LastRenderTime { get; } = new MediaTypeDictionary<TimeSpan>();
 
         /// <summary>
         /// Gets or sets a value indicating whether the decoder worker is sync-buffering
@@ -163,28 +158,18 @@
         /// </summary>
         internal void StartWorkers()
         {
+            // Initialize the workers
+            RenderingWorker = new RenderingWorker(this);
+
             // Initialize the block buffers
             foreach (var t in Container.Components.MediaTypes)
-            {
                 Blocks[t] = new MediaBlockBuffer(Constants.MaxBlocks[t], t);
-                Renderers[t] = Platform.CreateRenderer(t, this);
-                InvalidateRenderer(t);
-            }
-
-            // Create the renderer for the preloaded subs
-            if (PreloadedSubtitles != null)
-            {
-                var t = PreloadedSubtitles.MediaType;
-                Renderers[t] = Platform.CreateRenderer(t, this);
-                InvalidateRenderer(t);
-            }
 
             Clock.SpeedRatio = Constants.Controller.DefaultSpeedRatio;
             Commands.IsStopWorkersPending = false;
             IsSyncBuffering = true;
 
             // Set the initial state of the task cycles.
-            BlockRenderingCycle.Complete();
             FrameDecodingCycle.Begin();
             PacketReadingCycle.Begin();
 
@@ -198,7 +183,7 @@
             // Fire up the threads
             PacketReadingTask.Start();
             FrameDecodingTask.Start();
-            StartBlockRenderingWorker();
+            RenderingWorker.Start();
         }
 
         /// <summary>
@@ -216,9 +201,10 @@
             Container?.SignalAbortReads(false);
 
             // Stop the rendering worker before anything else
-            StopBlockRenderingWorker();
+            RenderingWorker.Stop();
 
             // Call close on all renderers
+            // TODO: Move to RenderingWorker Stop Logic
             foreach (var renderer in Renderers.Values)
                 renderer.Close();
 
@@ -233,6 +219,9 @@
             }
 
             // Set the threads to null
+            RenderingWorker.Dispose();
+            RenderingWorker = null;
+
             FrameDecodingTask = null;
             PacketReadingTask = null;
 
@@ -345,41 +334,12 @@
         ///   <c>true</c> if more frames can be decoded; otherwise, <c>false</c>.
         /// </returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CanReadMoreFramesOf(MediaType t)
+        internal bool CanReadMoreFramesOf(MediaType t)
         {
             return
                 Container.Components[t].BufferLength > 0 ||
                 Container.Components[t].HasPacketsInCodec ||
                 ShouldReadMorePackets;
-        }
-
-        /// <summary>
-        /// Sends the given block to its corresponding media renderer.
-        /// </summary>
-        /// <param name="block">The block.</param>
-        /// <param name="clockPosition">The clock position.</param>
-        /// <returns>
-        /// The number of blocks sent to the renderer
-        /// </returns>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int SendBlockToRenderer(MediaBlock block, TimeSpan clockPosition)
-        {
-            // No blocks were rendered
-            if (block == null) return 0;
-
-            // Process property changes coming from video blocks
-            State.UpdateDynamicBlockProperties(block, Blocks[block.MediaType]);
-
-            // Send the block to its corresponding renderer
-            Renderers[block.MediaType]?.Render(block, clockPosition);
-            LastRenderTime[block.MediaType] = block.StartTime;
-
-            // Log the block statistics for debugging
-            LogRenderBlock(block, clockPosition, block.Index);
-
-            // At this point, we are certain that a blocl has been
-            // sent to its corresponding renderer.
-            return 1;
         }
 
         /// <summary>
@@ -395,37 +355,6 @@
             // Decode the frames
             var block = Blocks[t].Add(Container.Components[t].ReceiveNextFrame(), Container);
             return block != null;
-        }
-
-        /// <summary>
-        /// Logs a block rendering operation as a Trace Message
-        /// if the debugger is attached.
-        /// </summary>
-        /// <param name="block">The block.</param>
-        /// <param name="clockPosition">The clock position.</param>
-        /// <param name="renderIndex">Index of the render.</param>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void LogRenderBlock(MediaBlock block, TimeSpan clockPosition, int renderIndex)
-        {
-            // Prevent logging for production use
-            if (Platform.IsInDebugMode == false) return;
-
-            try
-            {
-                var drift = TimeSpan.FromTicks(clockPosition.Ticks - block.StartTime.Ticks);
-                this.LogTrace(Aspects.RenderingWorker,
-                    $"{block.MediaType.ToString().Substring(0, 1)} "
-                    + $"BLK: {block.StartTime.Format()} | "
-                    + $"CLK: {clockPosition.Format()} | "
-                    + $"DFT: {drift.TotalMilliseconds,4:0} | "
-                    + $"IX: {renderIndex,3} | "
-                    + $"PQ: {Container?.Components[block.MediaType]?.BufferLength / 1024d,7:0.0}k | "
-                    + $"TQ: {Container?.Components.BufferLength / 1024d,7:0.0}k");
-            }
-            catch
-            {
-                // swallow
-            }
         }
 
         #endregion
