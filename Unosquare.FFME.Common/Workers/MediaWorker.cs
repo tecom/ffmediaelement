@@ -19,6 +19,7 @@
             Components = mediaCore.Container.Components;
             Renderers = mediaCore.Renderers;
             Blocks = mediaCore.Blocks;
+            IsInDebugMode = MediaEngine.Platform?.IsInDebugMode ?? false;
         }
 
         protected MediaEngine MediaCore { get; }
@@ -34,6 +35,8 @@
         protected MediaTypeDictionary<IMediaRenderer> Renderers { get; }
 
         protected MediaTypeDictionary<MediaBlockBuffer> Blocks { get; }
+
+        protected bool IsInDebugMode { get; }
 
         /// <summary>
         /// Gets a value indicating whether a worker interrupt has been requested by the command manager.

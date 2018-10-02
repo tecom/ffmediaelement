@@ -29,6 +29,7 @@
         private volatile bool m_IsCycleInterruptRequested;
         private Thread WorkerThread;
         private bool m_IsDisposed;
+        private bool m_CanReceiveRequests;
 
         #endregion
 
@@ -114,6 +115,16 @@
         {
             get { lock (SyncLock) return m_IsDisposed; }
             private set { lock (SyncLock) m_IsDisposed = value; }
+        }
+
+        /// <summary>
+        /// Gets a value indicating whether the worker can receive
+        /// state change requests.
+        /// </summary>
+        public bool CanReceiveRequests
+        {
+            get { lock (SyncLock) return m_CanReceiveRequests; }
+            private set { lock (SyncLock) m_CanReceiveRequests = value; }
         }
 
         /// <summary>
@@ -353,6 +364,9 @@
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void CommitWorkerStateRequest(ThreadStateRequest request)
         {
+            if (request == ThreadStateRequest.Stop)
+                CanReceiveRequests = false;
+
             WorkerStateChangedEvent.Reset();
             WorkerStateRequest = request;
             CycleInterruptRequest.Set();
@@ -371,6 +385,9 @@
                 // Check for disposed
                 if (IsDisposed)
                     throw new ObjectDisposedException($"Worker '{WorkerName}' has been disposed.");
+
+                if (CanReceiveRequests == false)
+                    throw new InvalidOperationException($"Wroekr '{WorkerName}' is unable to process state changes.");
 
                 // If there is already a request of the same type, simply return.
                 if (WorkerStateRequest == request)
@@ -437,6 +454,7 @@
                         CycleInterruptRequest.Reset();
                         IsCycleInterruptRequested = false;
                         WorkerCycledEvent.Set();
+                        CanReceiveRequests = true;
                         break;
 
                     case ThreadState.Suspended:

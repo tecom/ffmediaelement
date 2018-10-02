@@ -16,7 +16,6 @@
         public RenderingWorker(MediaEngine mediaCore)
             : base(nameof(RenderingWorker), ThreadPriority.Lowest, TimeSpan.FromMilliseconds(30), mediaCore)
         {
-            IsInDebugMode = MediaEngine.Platform?.IsInDebugMode ?? false;
             InitializeRenderers();
         }
 
@@ -28,8 +27,6 @@
         public MediaTypeDictionary<MediaBlock> CurrentBlock { get; } = new MediaTypeDictionary<MediaBlock>();
 
         private MediaBlockBuffer PreloadedSubtitles => MediaCore.PreloadedSubtitles;
-
-        private bool IsInDebugMode { get; }
 
         /// <summary>
         /// Invalidates the last render time for the given component.
