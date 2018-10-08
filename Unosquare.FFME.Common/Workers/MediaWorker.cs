@@ -8,8 +8,8 @@
 
     internal abstract class MediaWorker : TimerWorkerBase
     {
-        protected MediaWorker(string workerName, TimeSpan cyclePeriod, MediaEngine mediaCore)
-            : base(workerName, cyclePeriod)
+        protected MediaWorker(string workerName, MediaEngine mediaCore)
+            : base(workerName, TimeSpan.FromMilliseconds(15))
         {
             MediaCore = mediaCore;
             Commands = mediaCore.Commands;

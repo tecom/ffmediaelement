@@ -5,6 +5,7 @@
     using System;
     using System.Linq;
     using System.Runtime.CompilerServices;
+    using System.Threading;
 
     internal sealed class RenderingWorker : MediaWorker
     {
@@ -13,7 +14,7 @@
         private TimeSpan wallClock;
 
         public RenderingWorker(MediaEngine mediaCore)
-            : base(nameof(RenderingWorker), TimeSpan.FromMilliseconds(30), mediaCore)
+            : base(nameof(RenderingWorker), mediaCore)
         {
             InitializeRenderers();
         }
@@ -65,8 +66,8 @@
             all = Renderers.Keys.ToArray();
 
             // wait for main component blocks or EOF or cancellation pending
-            while (MediaCore.CanReadMoreFramesOf(main) && Blocks[main].Count <= 0)
-                MediaCore.DecodingWorker.WaitOne();
+            while (Blocks[main].Count <= 0)
+                Thread.Sleep(1);
 
             // Set the initial clock position
             wallClock = MediaCore.ChangePosition(Blocks[main].RangeStartTime);

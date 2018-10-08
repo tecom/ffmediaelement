@@ -17,7 +17,7 @@
         private TimeSpan wallClock;
 
         public DecodingWorker(MediaEngine mediaCore)
-            : base(nameof(RenderingWorker), TimeSpan.FromMilliseconds(20), mediaCore)
+            : base(nameof(RenderingWorker), mediaCore)
         {
         }
 

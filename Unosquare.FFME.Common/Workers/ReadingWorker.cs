@@ -1,11 +1,9 @@
 ﻿namespace Unosquare.FFME.Workers
 {
-    using System;
-
     internal sealed class ReadingWorker : MediaWorker
     {
         public ReadingWorker(MediaEngine mediaCore)
-            : base(nameof(RenderingWorker), TimeSpan.FromMilliseconds(10), mediaCore)
+            : base(nameof(RenderingWorker), mediaCore)
         {
             // Packet Buffer Notification Callbacks
             Container.Components.OnPacketQueueChanged = (op, packet, mediaType, state) =>
