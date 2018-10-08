@@ -547,8 +547,7 @@
             DownloadProgress = Math.Min(1d, (double)bufferLength / MediaCore.BufferLengthMax);
 
             // Check if we are currently buffering
-            var isCurrentlyBuffering = MediaCore.ShouldReadMorePackets
-                && (MediaCore.IsSyncBuffering || BufferingProgress < 1d);
+            var isCurrentlyBuffering = MediaCore.ShouldReadMorePackets && BufferingProgress < 1d;
 
             // Detect and notify a change in buffering state
             if (isCurrentlyBuffering == IsBuffering)

@@ -116,10 +116,9 @@
 
             // Dispose the Wait Event objects as they are
             // backed by unmanaged code
-            PacketReadingCycle.Dispose();
-            FrameDecodingCycle.Dispose();
+            ReadingWorker.Dispose();
+            DecodingWorker.Dispose();
             RenderingWorker.Dispose();
-            BufferChangedEvent.Dispose();
         }
 
         /// <summary>

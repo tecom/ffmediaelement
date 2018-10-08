@@ -5,12 +5,11 @@
     using Primitives;
     using Shared;
     using System;
-    using System.Threading;
 
-    internal abstract class MediaWorker : BackgroundWorkerBase
+    internal abstract class MediaWorker : TimerWorkerBase
     {
-        protected MediaWorker(string workerName, ThreadPriority priority, TimeSpan cyclePeriod, MediaEngine mediaCore)
-            : base(workerName, priority, cyclePeriod)
+        protected MediaWorker(string workerName, TimeSpan cyclePeriod, MediaEngine mediaCore)
+            : base(workerName, cyclePeriod)
         {
             MediaCore = mediaCore;
             Commands = mediaCore.Commands;
@@ -45,7 +44,6 @@
         protected bool IsWorkerInterruptRequested =>
             Commands.IsSeeking ||
             Commands.IsChanging ||
-            Commands.IsClosing ||
-            Commands.IsStopWorkersPending;
+            Commands.IsClosing;
     }
 }

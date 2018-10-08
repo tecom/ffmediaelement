@@ -3,6 +3,7 @@
     using System;
     using System.Runtime.CompilerServices;
     using System.Threading;
+    using System.Threading.Tasks;
 
     /// <summary>
     /// A base class used for controlling cyclic execution of logic.
@@ -239,7 +240,7 @@
                 throw new ObjectDisposedException($"Worker '{WorkerName}' has been disposed.");
 
             var maxTimeout = millisecondsTimeout < 0 ? Timeout.Infinite : millisecondsTimeout;
-            return WorkerCycledEvent.WaitOne(maxTimeout, false);
+            return WorkerCycledEvent.WaitOne(maxTimeout);
         }
 
         /// <summary>
@@ -268,7 +269,7 @@
                 throw new ObjectDisposedException($"Worker '{WorkerName}' has been disposed.");
 
             var maxTimeout = millisecondsTimeout < 0 ? Timeout.Infinite : millisecondsTimeout;
-            return WorkerStateChangedEvent.WaitOne(maxTimeout, false);
+            return WorkerStateChangedEvent.WaitOne(maxTimeout);
         }
 
         /// <summary>
@@ -326,8 +327,14 @@
         /// <param name="remainingCycleTime">The remaining cycle time.</param>
         protected virtual void DelayWorkerCycle(TimeSpan remainingCycleTime)
         {
-            if (remainingCycleTime.TotalMilliseconds <= 0) return;
-            CycleInterruptRequest.WaitOne((int)Math.Round(remainingCycleTime.TotalMilliseconds, 0), false);
+            var remainingCycleMillis = (int)Math.Round(remainingCycleTime.TotalMilliseconds, 0);
+            if (remainingCycleMillis <= 0)
+            {
+                Thread.Yield();
+                return;
+            }
+
+            CycleInterruptRequest.WaitOne(remainingCycleMillis);
         }
 
         /// <summary>
@@ -353,6 +360,11 @@
         /// </summary>
         protected virtual void OnWorkerDisposing() { }
 
+        /// <summary>
+        /// Called when an interrupt is requested.
+        /// </summary>
+        protected virtual void OnWorkerInterruptRequested() { }
+
         #endregion
 
         #region Private Methods
@@ -371,6 +383,7 @@
             WorkerStateRequest = request;
             CycleInterruptRequest.Set();
             IsCycleInterruptRequested = true;
+            OnWorkerInterruptRequested();
         }
 
         /// <summary>
@@ -385,9 +398,6 @@
                 // Check for disposed
                 if (IsDisposed)
                     throw new ObjectDisposedException($"Worker '{WorkerName}' has been disposed.");
-
-                if (CanReceiveRequests == false)
-                    throw new InvalidOperationException($"Wroekr '{WorkerName}' is unable to process state changes.");
 
                 // If there is already a request of the same type, simply return.
                 if (WorkerStateRequest == request)
@@ -430,6 +440,10 @@
                         if (WorkerThread == null)
                             throw new InvalidOperationException($"Worker request to '{request}' failed. Worker has not been started.");
 
+                        // Check requests can be processed
+                        if (CanReceiveRequests == false)
+                            throw new InvalidOperationException($"Worker '{WorkerName}' is unable to process state changes.");
+
                         break;
                 }
 
@@ -468,6 +482,7 @@
                         // Prevent any waiting to occur before exit
                         CycleInterruptRequest.Set();
                         IsCycleInterruptRequested = true;
+                        OnWorkerInterruptRequested();
                         WorkerCycledEvent.Set();
                         break;
 
@@ -508,7 +523,7 @@
                     if (stateRequest == ThreadStateRequest.Suspend)
                     {
                         UpdateWorkerState(ThreadState.Suspended);
-                        CycleInterruptRequest.WaitOne(Timeout.Infinite, false);
+                        CycleInterruptRequest.WaitOne(Timeout.Infinite);
                         WorkerCycledEvent.Set();
                         continue;
                     }
@@ -522,10 +537,12 @@
                     }
 
                     // Execute the cycle logic
-                    ExecuteWorkerCycle();
+                    var workerTask = Task.Run(ExecuteWorkerCycle).ConfigureAwait(false);
 
+                    // ExecuteWorkerCycle();
                     // The remaining cycle time is the difference between the target cycle period
                     // and the amount of time the logic took to execute.
+                    workerTask.GetAwaiter().GetResult();
                     DelayWorkerCycle(TimeSpan.FromTicks(CyclePeriod.Ticks - executeStopwatch.Elapsed.Ticks));
 
                     // Signal the end of a cycle

@@ -5,7 +5,6 @@
     using System;
     using System.Linq;
     using System.Runtime.CompilerServices;
-    using System.Threading;
 
     internal sealed class RenderingWorker : MediaWorker
     {
@@ -14,7 +13,7 @@
         private TimeSpan wallClock;
 
         public RenderingWorker(MediaEngine mediaCore)
-            : base(nameof(RenderingWorker), ThreadPriority.Lowest, TimeSpan.FromMilliseconds(30), mediaCore)
+            : base(nameof(RenderingWorker), TimeSpan.FromMilliseconds(30), mediaCore)
         {
             InitializeRenderers();
         }
@@ -67,7 +66,7 @@
 
             // wait for main component blocks or EOF or cancellation pending
             while (MediaCore.CanReadMoreFramesOf(main) && Blocks[main].Count <= 0)
-                MediaCore.FrameDecodingCycle.Wait(Constants.Interval.LowPriority);
+                MediaCore.DecodingWorker.WaitOne();
 
             // Set the initial clock position
             wallClock = MediaCore.ChangePosition(Blocks[main].RangeStartTime);
@@ -77,8 +76,10 @@
                 Renderers[t]?.WaitForReadyState();
         }
 
-        protected override void ExecuteWorkerCycle()
+        protected override void ExecuteWorkerCycle(out bool cycle)
         {
+            cycle = false;
+
             // Prevent rendering if we are busy
             if (Commands.IsExecutingDirectCommand)
                 return;
@@ -93,10 +94,19 @@
             // Capture the blocks to render
             foreach (var t in all)
             {
+                // Skip lookup if we already have the current block
+                if (CurrentBlock[t]?.Contains(wallClock) ?? false)
+                    continue;
+
+                // Find the block in preloaded subs
+                if (t == MediaType.Subtitle && PreloadedSubtitles != null)
+                {
+                    CurrentBlock[t] = PreloadedSubtitles[wallClock];
+                    continue;
+                }
+
                 // Get the audio, video, or subtitle block to render
-                CurrentBlock[t] = t == MediaType.Subtitle && PreloadedSubtitles != null ?
-                    PreloadedSubtitles[wallClock] :
-                    Blocks[t][wallClock];
+                CurrentBlock[t] = Blocks[t][wallClock];
             }
 
             // Render each of the Media Types if it is time to do so.
@@ -140,7 +150,7 @@
             }
 
             // Update the Position
-            if ((IsWorkerInterruptRequested || MediaCore.IsSyncBuffering) == false)
+            if (IsWorkerInterruptRequested == false)
                 State.UpdatePosition();
         }
 
@@ -149,9 +159,9 @@
             base.OnWorkerStopped();
         }
 
-        protected override void OnWorkerDisposing()
+        protected override void OnWorkerDisposed()
         {
-            base.OnWorkerDisposing();
+            base.OnWorkerDisposed();
         }
 
         /// <summary>

@@ -102,16 +102,6 @@
         public bool IsActivelySeeking => SeekingCommandEvent.IsInProgress;
 
         /// <summary>
-        /// Gets a value indicating whether Reading, Decoding and Rendering workers are
-        /// pending stop.
-        /// </summary>
-        public bool IsStopWorkersPending
-        {
-            get => m_IsStopWorkersPending.Value;
-            set => m_IsStopWorkersPending.Value = value;
-        }
-
-        /// <summary>
         /// Gets a value indicating whether the command queued contains commands.
         /// </summary>
         public bool HasQueuedCommands
@@ -359,7 +349,6 @@
 
                 // Signal the workers we need to quit
                 ClearCommandQueue();
-                IsStopWorkersPending = true;
                 MediaCore.Container?.SignalAbortReads(false);
 
                 // Wait for any pending direct command
@@ -633,9 +622,6 @@
             // Signal the workers to stop
             if (commandType == CommandType.Close)
             {
-                // Prepare for close command by signalling workers to stop
-                IsStopWorkersPending = true;
-
                 // Signal the container reads to abort immediately
                 MediaCore.Container?.SignalAbortReads(false);
             }
@@ -643,9 +629,6 @@
             // Wait for cycles to complete.
             // Cycles must wait for priority commands before continuing
             if (!MediaCore.State.IsOpen) return;
-
-            MediaCore.FrameDecodingCycle.Wait();
-            MediaCore.PacketReadingCycle.Wait();
         }
 
         /// <summary>

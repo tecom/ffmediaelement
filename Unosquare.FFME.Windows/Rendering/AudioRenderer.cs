@@ -812,9 +812,11 @@
             // Capture and adjust volume and balance
             var volume = MediaCore.State.Volume;
             var balance = MediaCore.State.Balance;
+            var applyBalance = false;
 
             volume = volume.Clamp(Constants.Controller.MinVolume, Constants.Controller.MaxVolume);
             balance = balance.Clamp(Constants.Controller.MinBalance, Constants.Controller.MaxBalance);
+            applyBalance = balance < -double.Epsilon || balance > double.Epsilon;
 
             var leftVolume = volume * (balance > 0 ? 1d - balance : 1d);
             var rightVolume = volume * (balance < 0 ? 1d + balance : 1d);
@@ -832,10 +834,8 @@
                 // This holds true for little endian architecture
                 currentSample = ReadBuffer.GetAudioSample(sourceBufferOffset);
 
-                if (isLeftSample && Math.Abs(leftVolume - 1.0) > double.Epsilon)
-                    currentSample = Convert.ToInt16(currentSample * leftVolume);
-                else if (isLeftSample == false && Math.Abs(leftVolume - 1.0) > double.Epsilon)
-                    currentSample = Convert.ToInt16(currentSample * rightVolume);
+                if (applyBalance)
+                    currentSample = Convert.ToInt16(currentSample * (isLeftSample ? leftVolume : rightVolume));
 
                 targetBuffer.PutAudioSample(targetBufferOffset + sourceBufferOffset, currentSample);
                 isLeftSample = !isLeftSample;

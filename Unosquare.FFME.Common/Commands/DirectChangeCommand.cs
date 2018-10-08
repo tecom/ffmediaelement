@@ -37,6 +37,7 @@
         public override void PostProcess()
         {
             MediaCore.State.UpdateFixedContainerProperties();
+            MediaCore.ResumeWorkers();
 
             if (ErrorException == null)
             {
@@ -69,11 +70,7 @@
                 m.Clock.Pause();
 
                 // Wait for the cycles to complete
-                // TODO: Replace with suspend and perofrm a resume for faster changes.
-                m.RenderingWorker.WaitOne();
-                var workerEvents = new[] { m.PacketReadingCycle };
-                foreach (var workerEvent in workerEvents)
-                    workerEvent.Wait();
+                m.SuspendWorkers();
 
                 // Signal a change so the user get the chance to update
                 // selected streams and options

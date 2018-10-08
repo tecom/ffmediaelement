@@ -4,7 +4,6 @@
     using Shared;
     using System;
     using System.Runtime.CompilerServices;
-    using System.Threading;
     using Workers;
 
     public partial class MediaEngine
@@ -18,10 +17,7 @@
 
         #region State Management
 
-        private readonly AtomicBoolean m_IsSyncBuffering = new AtomicBoolean(false);
         private readonly AtomicBoolean m_HasDecodingEnded = new AtomicBoolean(false);
-        private Thread PacketReadingTask;
-        private Thread FrameDecodingTask;
 
         /// <summary>
         /// Holds the materialized block cache for each media type.
@@ -34,40 +30,25 @@
         public MediaBlockBuffer PreloadedSubtitles { get; private set; }
 
         /// <summary>
+        /// Gets the reading worker.
+        /// </summary>
+        internal ReadingWorker ReadingWorker { get; private set; }
+
+        /// <summary>
+        /// Gets the decoding worker.
+        /// </summary>
+        internal DecodingWorker DecodingWorker { get; private set; }
+
+        /// <summary>
         /// Gets the rendering worker.
         /// </summary>
         internal RenderingWorker RenderingWorker { get; private set; }
-
-        /// <summary>
-        /// Gets the packet reading cycle control event.
-        /// </summary>
-        internal IWaitEvent PacketReadingCycle { get; } = WaitEventFactory.Create(isCompleted: false, useSlim: true);
-
-        /// <summary>
-        /// Gets the frame decoding cycle control event.
-        /// </summary>
-        internal IWaitEvent FrameDecodingCycle { get; } = WaitEventFactory.Create(isCompleted: false, useSlim: true);
-
-        /// <summary>
-        /// Completed whenever a change in the packet buffer is detected.
-        /// This needs to be reset manually and prevents high CPU usage in the packet reading worker.
-        /// </summary>
-        internal IWaitEvent BufferChangedEvent { get; } = WaitEventFactory.Create(isCompleted: true, useSlim: true);
 
         /// <summary>
         /// Holds the block renderers
         /// TODO: Move this to the <see cref="RenderingWorker"/>
         /// </summary>
         internal MediaTypeDictionary<IMediaRenderer> Renderers { get; } = new MediaTypeDictionary<IMediaRenderer>();
-
-        /// <summary>
-        /// Gets or sets a value indicating whether the decoder worker is sync-buffering
-        /// </summary>
-        internal bool IsSyncBuffering
-        {
-            get => m_IsSyncBuffering.Value;
-            set => m_IsSyncBuffering.Value = value;
-        }
 
         /// <summary>
         /// Gets or sets a value indicating whether the decoder worker has decoded all frames.
@@ -77,26 +58,6 @@
         {
             get => m_HasDecodingEnded.Value;
             set => m_HasDecodingEnded.Value = value;
-        }
-
-        /// <summary>
-        /// Gets a value indicating whether the packet reader has finished sync-buffering.
-        /// </summary>
-        internal bool CanExitSyncBuffering
-        {
-            get
-            {
-                if (IsSyncBuffering == false)
-                    return false;
-
-                if (Container.Components.BufferLength > BufferLengthMax)
-                    return true;
-
-                if (Container.Components.HasEnoughPackets)
-                    return true;
-
-                return Container.IsLiveStream && Blocks.Main(Container).IsFull;
-            }
         }
 
         /// <summary>
@@ -113,7 +74,7 @@
         {
             get
             {
-                if (Commands.IsStopWorkersPending || Container?.Components == null)
+                if (Container?.Components == null)
                     return false;
 
                 if (Container.IsReadAborted || Container.IsAtEndOfStream)
@@ -132,22 +93,6 @@
             }
         }
 
-        /// <summary>
-        /// Gets a value indicating whether the reading worker can read packets at the current time.
-        /// This is simply a bit-wise AND of negating <see cref="IsWorkerInterruptRequested"/> == false
-        /// and <see cref="ShouldReadMorePackets"/>
-        /// </summary>
-        private bool ShouldWorkerReadPackets => IsWorkerInterruptRequested == false && ShouldReadMorePackets;
-
-        /// <summary>
-        /// Gets a value indicating whether a worker interrupt has been requested by the command manager.
-        /// This instructs potentially long loops in workers to immediately exit.
-        /// </summary>
-        private bool IsWorkerInterruptRequested => Commands.IsSeeking ||
-                    Commands.IsChanging ||
-                    Commands.IsClosing ||
-                    Commands.IsStopWorkersPending;
-
         #endregion
 
         #region Methods
@@ -159,31 +104,33 @@
         internal void StartWorkers()
         {
             // Initialize the workers
+            ReadingWorker = new ReadingWorker(this);
+            DecodingWorker = new DecodingWorker(this);
             RenderingWorker = new RenderingWorker(this);
 
             // Initialize the block buffers
+            // TODO initialize in rendering worker
             foreach (var t in Container.Components.MediaTypes)
                 Blocks[t] = new MediaBlockBuffer(Constants.MaxBlocks[t], t);
 
             Clock.SpeedRatio = Constants.Controller.DefaultSpeedRatio;
-            Commands.IsStopWorkersPending = false;
-            IsSyncBuffering = true;
-
-            // Set the initial state of the task cycles.
-            FrameDecodingCycle.Begin();
-            PacketReadingCycle.Begin();
-
-            // Create the thread runners
-            PacketReadingTask = new Thread(RunPacketReadingWorker)
-            { IsBackground = true, Name = nameof(PacketReadingTask), Priority = ThreadPriority.Normal };
-
-            FrameDecodingTask = new Thread(RunFrameDecodingWorker)
-            { IsBackground = true, Name = nameof(FrameDecodingTask), Priority = ThreadPriority.AboveNormal };
-
-            // Fire up the threads
-            PacketReadingTask.Start();
-            FrameDecodingTask.Start();
+            ReadingWorker.Start();
+            DecodingWorker.Start();
             RenderingWorker.Start();
+        }
+
+        internal void SuspendWorkers()
+        {
+            ReadingWorker.Suspend();
+            RenderingWorker.Suspend();
+            DecodingWorker.Suspend();
+        }
+
+        internal void ResumeWorkers()
+        {
+            ReadingWorker.Resume();
+            RenderingWorker.Resume();
+            DecodingWorker.Resume();
         }
 
         /// <summary>
@@ -194,36 +141,27 @@
             // Pause the clock so no further updates are propagated
             Clock.Pause();
 
-            // Let the threads know a cancellation is pending.
-            Commands.IsStopWorkersPending = true;
-
             // Cause an immediate Packet read abort
             Container?.SignalAbortReads(false);
 
             // Stop the rendering worker before anything else
             RenderingWorker.Stop();
+            DecodingWorker.Stop();
+            ReadingWorker.Stop();
 
             // Call close on all renderers
             // TODO: Move to RenderingWorker Stop Logic
             foreach (var renderer in Renderers.Values)
                 renderer.Close();
 
-            // Stop the rest of the workers
-            // i.e. wait for worker threads to finish
-            var workers = new[] { PacketReadingTask, FrameDecodingTask };
-            foreach (var w in workers)
-            {
-                // w.Abort causes memory leaks because packets and frames might not
-                // get disposed by the corresponding workers. We use Join instead.
-                w?.Join();
-            }
-
             // Set the threads to null
             RenderingWorker.Dispose();
-            RenderingWorker = null;
+            DecodingWorker.Dispose();
+            ReadingWorker.Dispose();
 
-            FrameDecodingTask = null;
-            PacketReadingTask = null;
+            RenderingWorker = null;
+            DecodingWorker = null;
+            ReadingWorker = null;
 
             // Remove the renderers disposing of them
             Renderers.Clear();
@@ -340,21 +278,6 @@
                 Container.Components[t].BufferLength > 0 ||
                 Container.Components[t].HasPacketsInCodec ||
                 ShouldReadMorePackets;
-        }
-
-        /// <summary>
-        /// Tries to receive the next frame from the decoder by decoding queued
-        /// Packets and converting the decoded frame into a Media Block which gets
-        /// queued into the playback block buffer.
-        /// </summary>
-        /// <param name="t">The MediaType.</param>
-        /// <returns>True if a block could be added. False otherwise.</returns>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool AddNextBlock(MediaType t)
-        {
-            // Decode the frames
-            var block = Blocks[t].Add(Container.Components[t].ReceiveNextFrame(), Container);
-            return block != null;
         }
 
         #endregion
