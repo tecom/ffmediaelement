@@ -240,10 +240,17 @@
 
             foreach (var component in All)
             {
-                if (component.StreamIndex != packet.StreamIndex)
-                    continue;
+                bool toNextComponent = true;
+                int i;
+                for (i = 0; i < component.StreamIndexes.Length; i++)
+                {
+                    toNextComponent &= component.StreamIndexes[i] != packet.StreamIndex;
+                    if (!toNextComponent) break;
+                }
 
-                component.SendPacket(packet);
+                if (toNextComponent) continue;
+
+                component.SendPacket(packet, i);
                 return component.MediaType;
             }
 
@@ -258,7 +265,7 @@
         public void SendEmptyPackets()
         {
             foreach (var component in All)
-                component.SendEmptyPacket();
+                component.SendEmptyPacket(0);
         }
 
         /// <summary>
@@ -482,7 +489,7 @@
             m_Count = allComponents.Count;
 
             // Try for the main component to be the video (if it's not stuff like audio album art, that is)
-            if (m_Video != null && m_Audio != null && m_Video.StreamInfo.IsAttachedPictureDisposition == false)
+            if (m_Video != null && m_Audio != null && m_Video.StreamInfos[0].IsAttachedPictureDisposition == false)
             {
                 m_Main = m_Video;
                 m_MainMediaType = MediaType.Video;

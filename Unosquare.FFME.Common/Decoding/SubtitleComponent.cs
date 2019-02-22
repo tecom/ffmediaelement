@@ -168,9 +168,9 @@
         #endregion
 
         /// <inheritdoc />
-        protected override MediaFrame CreateFrameSource(IntPtr framePointer)
+        protected override MediaFrame CreateFrameSource(params IntPtr[] framePointers)
         {
-            var frame = (AVSubtitle*)framePointer;
+            var frame = (AVSubtitle*)framePointers[0];
             var frameHolder = new SubtitleFrame(frame, this);
             return frameHolder;
         }

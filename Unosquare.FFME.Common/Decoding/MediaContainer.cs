@@ -334,14 +334,14 @@
             get
             {
                 var canRequireAttachments = Components.HasVideo &&
-                    Components.Video.StreamInfo.IsAttachedPictureDisposition;
+                    Components.Video.StreamInfos[0].IsAttachedPictureDisposition;
 
                 return canRequireAttachments && RequiresPictureAttachments;
             }
             set
             {
                 var canRequireAttachments = Components.HasVideo &&
-                    Components.Video.StreamInfo.IsAttachedPictureDisposition;
+                    Components.Video.StreamInfos[0].IsAttachedPictureDisposition;
 
                 RequiresPictureAttachments = canRequireAttachments && value;
             }
@@ -768,7 +768,7 @@
                     if (s.Key == AVMediaType.AVMEDIA_TYPE_VIDEO)
                         MediaOptions.VideoStream = s.Value;
                     else if (s.Key == AVMediaType.AVMEDIA_TYPE_AUDIO)
-                        MediaOptions.AudioStream = s.Value;
+                        MediaOptions.AudioStream = new[] { s.Value };
                     else if (s.Key == AVMediaType.AVMEDIA_TYPE_SUBTITLE)
                         MediaOptions.SubtitleStream = s.Value;
                 }
@@ -856,7 +856,7 @@
         /// <param name="t">The Media Type.</param>
         /// <param name="stream">The stream information. Set to null to remove.</param>
         /// <returns>The media type that was created. None for unsuccessful creation</returns>
-        private MediaType StreamCreateComponent(MediaType t, StreamInfo stream)
+        private MediaType StreamCreateComponent(MediaType t, params StreamInfo[] stream)
         {
             // Check if the component should be disabled (removed)
             bool isDisabled;
@@ -882,14 +882,14 @@
                     Components.RemoveComponent(t);
 
                 // Instantiate component
-                if (stream != null && stream.CodecType == (AVMediaType)t && isDisabled == false)
+                if (stream != null && stream[0].CodecType == (AVMediaType)t && isDisabled == false)
                 {
                     if (t == MediaType.Audio)
-                        Components.AddComponent(new AudioComponent(this, stream.StreamIndex));
+                        Components.AddComponent(new AudioComponent(this, stream.Select(s => s.StreamIndex).ToArray()));
                     else if (t == MediaType.Video)
-                        Components.AddComponent(new VideoComponent(this, stream.StreamIndex));
+                        Components.AddComponent(new VideoComponent(this, stream[0].StreamIndex));
                     else if (t == MediaType.Subtitle)
-                        Components.AddComponent(new SubtitleComponent(this, stream.StreamIndex));
+                        Components.AddComponent(new SubtitleComponent(this, stream[0].StreamIndex));
                 }
             }
             catch (Exception ex)
@@ -950,11 +950,11 @@
 
             if (StateRequiresPictureAttachments)
             {
-                var attachedPacket = MediaPacket.ClonePacket(&Components.Video.Stream->attached_pic);
+                var attachedPacket = MediaPacket.ClonePacket(&Components.Video.Stream(0)->attached_pic);
                 if (attachedPacket != null)
                 {
                     Components.Video.SendPacket(attachedPacket);
-                    Components.Video.SendEmptyPacket();
+                    Components.Video.SendEmptyPacket(0);
                 }
 
                 StateRequiresPictureAttachments = false;
@@ -1059,8 +1059,8 @@
             // Stream seeking by main component
             // The backward flag means that we want to seek to at MOST the target position
             var seekFlags = ffmpeg.AVSEEK_FLAG_BACKWARD;
-            var streamIndex = main.StreamIndex;
-            var timeBase = main.Stream->time_base;
+            var streamIndex = main.StreamIndexes[0];
+            var timeBase = main.Stream(0)->time_base;
 
             // Compute the absolute maximum 0-based target time which is simply the duration.
             var maxTargetTimeTicks = main.Duration.Ticks > 0 ? main.Duration.Ticks : 0;
@@ -1138,7 +1138,7 @@
                     StreamReadInterruptStartTime.Value = DateTime.UtcNow;
                     if (streamSeekRelativeTime.Ticks <= mainOffset.Ticks)
                     {
-                        seekTimestamp = mainOffset.ToLong(main.Stream->time_base);
+                        seekTimestamp = mainOffset.ToLong(main.Stream(0)->time_base);
                         isAtStartOfStream = true;
                     }
 
@@ -1198,8 +1198,8 @@
         private MediaFrame StreamSeekToStart()
         {
             var main = Components.Main;
-            var seekTarget = main.StartTime.ToLong(main.Stream->time_base);
-            var streamIndex = main.StreamIndex;
+            var seekTarget = main.StartTime.ToLong(main.Stream(0)->time_base);
+            var streamIndex = main.StreamIndexes[0];
             var seekFlags = ffmpeg.AVSEEK_FLAG_BACKWARD;
 
             StreamReadInterruptStartTime.Value = DateTime.UtcNow;

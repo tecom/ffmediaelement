@@ -41,10 +41,10 @@
             : base(container, streamIndex)
         {
             FilterString = container.MediaOptions.VideoFilter;
-            BaseFrameRateQ = Stream->r_frame_rate;
+            BaseFrameRateQ = Stream(0)->r_frame_rate;
 
             if (BaseFrameRateQ.den == 0 || BaseFrameRateQ.num == 0)
-                BaseFrameRateQ = ffmpeg.av_guess_frame_rate(container.InputContext, Stream, null);
+                BaseFrameRateQ = ffmpeg.av_guess_frame_rate(container.InputContext, Stream(0), null);
 
             if (BaseFrameRateQ.den == 0 || BaseFrameRateQ.num == 0)
             {
@@ -57,16 +57,16 @@
 
             BaseFrameRate = BaseFrameRateQ.ToDouble();
 
-            if (Stream->avg_frame_rate.den > 0 && Stream->avg_frame_rate.num > 0)
-                AverageFrameRate = Stream->avg_frame_rate.ToDouble();
+            if (Stream(0)->avg_frame_rate.den > 0 && Stream(0)->avg_frame_rate.num > 0)
+                AverageFrameRate = Stream(0)->avg_frame_rate.ToDouble();
             else
                 AverageFrameRate = BaseFrameRate;
 
-            FrameWidth = Stream->codec->width;
-            FrameHeight = Stream->codec->height;
+            FrameWidth = Stream(0)->codec->width;
+            FrameHeight = Stream(0)->codec->height;
 
             // Retrieve Matrix Rotation
-            var displayMatrixRef = ffmpeg.av_stream_get_side_data(Stream, AVPacketSideDataType.AV_PKT_DATA_DISPLAYMATRIX, null);
+            var displayMatrixRef = ffmpeg.av_stream_get_side_data(Stream(0), AVPacketSideDataType.AV_PKT_DATA_DISPLAYMATRIX, null);
             DisplayRotation = ComputeRotation(displayMatrixRef);
 
             var aspectRatio = ffmpeg.av_d2q((double)FrameWidth / FrameHeight, int.MaxValue);
@@ -74,7 +74,7 @@
             DisplayAspectHeight = aspectRatio.den;
 
             var seekIndex = container.MediaOptions.VideoSeekIndex;
-            SeekIndex = seekIndex != null && seekIndex.StreamIndex == StreamIndex ?
+            SeekIndex = seekIndex != null && seekIndex.StreamIndex == StreamIndexes[0] ?
                 new ReadOnlyCollection<VideoSeekIndexEntry>(seekIndex.Entries) :
                 new ReadOnlyCollection<VideoSeekIndexEntry>(new List<VideoSeekIndexEntry>(0));
         }
@@ -172,8 +172,8 @@
 
                 HardwareDeviceContext = devContextRef;
                 HardwareAccelerator = accelerator;
-                CodecContext->hw_device_ctx = ffmpeg.av_buffer_ref(HardwareDeviceContext);
-                CodecContext->get_format = accelerator.GetFormatCallback;
+                CodecContext(0)->hw_device_ctx = ffmpeg.av_buffer_ref(HardwareDeviceContext);
+                CodecContext(0)->get_format = accelerator.GetFormatCallback;
 
                 return true;
             }
@@ -278,7 +278,7 @@
                 target.EndTime = TimeSpan.FromTicks(target.StartTime.Ticks + target.Duration.Ticks);
 
                 // Guess picture number and SMTPE
-                var timeBase = ffmpeg.av_guess_frame_rate(Container.InputContext, Stream, source.Pointer);
+                var timeBase = ffmpeg.av_guess_frame_rate(Container.InputContext, Stream(0), source.Pointer);
                 target.DisplayPictureNumber = Extensions.ComputePictureNumber(target.StartTime, target.Duration, 1);
                 target.SmtpeTimeCode = Extensions.ComputeSmtpeTimeCode(StartTime, target.Duration, timeBase, target.DisplayPictureNumber);
             }
@@ -303,11 +303,11 @@
             target.ClosedCaptions = new ReadOnlyCollection<ClosedCaptionPacket>(source.ClosedCaptions);
 
             // Update the stream info object if we get Closed Caption Data
-            if (StreamInfo.HasClosedCaptions == false && target.ClosedCaptions.Count > 0)
-                StreamInfo.HasClosedCaptions = true;
+            if (StreamInfos[0].HasClosedCaptions == false && target.ClosedCaptions.Count > 0)
+                StreamInfos[0].HasClosedCaptions = true;
 
             // Process the aspect ratio
-            var aspectRatio = ffmpeg.av_guess_sample_aspect_ratio(Container.InputContext, Stream, source.Pointer);
+            var aspectRatio = ffmpeg.av_guess_sample_aspect_ratio(Container.InputContext, Stream(0), source.Pointer);
             if (aspectRatio.num == 0 || aspectRatio.den == 0)
             {
                 target.PixelAspectWidth = 1;
@@ -323,18 +323,18 @@
         }
 
         /// <inheritdoc />
-        protected override MediaFrame CreateFrameSource(IntPtr framePointer)
+        protected override MediaFrame CreateFrameSource(params IntPtr[] framePointer)
         {
             // Validate the video frame
-            var frame = (AVFrame*)framePointer;
+            var frame = (AVFrame*)framePointer[0];
 
-            if (framePointer == IntPtr.Zero || frame->width <= 0 || frame->height <= 0)
+            if (framePointer[0] == IntPtr.Zero || frame->width <= 0 || frame->height <= 0)
                 return null;
 
             // Move the frame from hardware (GPU) memory to RAM (CPU)
             if (HardwareAccelerator != null)
             {
-                frame = HardwareAccelerator.ExchangeFrame(CodecContext, frame, out var isHardwareFrame);
+                frame = HardwareAccelerator.ExchangeFrame(CodecContext(0), frame, out var isHardwareFrame);
                 IsUsingHardwareDecoding = isHardwareFrame;
             }
 
@@ -484,8 +484,8 @@
         {
             var arguments =
                  $"video_size={frame->width}x{frame->height}:pix_fmt={frame->format}:" +
-                 $"time_base={Stream->time_base.num}/{Stream->time_base.den}:" +
-                 $"pixel_aspect={CodecContext->sample_aspect_ratio.num}/{Math.Max(CodecContext->sample_aspect_ratio.den, 1)}";
+                 $"time_base={Stream(0)->time_base.num}/{Stream(0)->time_base.den}:" +
+                 $"pixel_aspect={CodecContext(0)->sample_aspect_ratio.num}/{Math.Max(CodecContext(0)->sample_aspect_ratio.den, 1)}";
 
             if (BaseFrameRateQ.num != 0 && BaseFrameRateQ.den != 0)
                 arguments = $"{arguments}:frame_rate={BaseFrameRateQ.num}/{BaseFrameRateQ.den}";

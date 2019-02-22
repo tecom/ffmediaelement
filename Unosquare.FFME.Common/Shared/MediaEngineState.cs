@@ -306,12 +306,12 @@
             Metadata = MediaCore.Container?.Metadata ?? EmptyDictionary;
             MediaFormat = MediaCore.Container?.MediaFormatName;
             MediaStreamSize = MediaCore.Container?.MediaStreamSize ?? default;
-            VideoStreamIndex = MediaCore.Container?.Components.Video?.StreamIndex ?? -1;
-            AudioStreamIndex = MediaCore.Container?.Components.Audio?.StreamIndex ?? -1;
-            SubtitleStreamIndex = MediaCore.Container?.Components.Subtitles?.StreamIndex ?? -1;
+            VideoStreamIndex = MediaCore.Container?.Components.Video?.StreamIndexes[0] ?? -1;
+            AudioStreamIndex = MediaCore.Container?.Components.Audio?.StreamIndexes[0] ?? -1;
+            SubtitleStreamIndex = MediaCore.Container?.Components.Subtitles?.StreamIndexes[0] ?? -1;
             HasAudio = MediaCore.Container?.Components.HasAudio ?? default;
             HasVideo = MediaCore.Container?.Components.HasVideo ?? default;
-            HasClosedCaptions = MediaCore.Container?.Components.Video?.StreamInfo?.HasClosedCaptions ?? default;
+            HasClosedCaptions = MediaCore.Container?.Components.Video?.StreamInfos?[0].HasClosedCaptions ?? default;
             HasSubtitles = (MediaCore.PreloadedSubtitles?.Count ?? 0) > 0
                 || (MediaCore.Container?.Components.HasSubtitles ?? false);
             VideoCodec = MediaCore.Container?.Components.Video?.CodecName;

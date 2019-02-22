@@ -53,9 +53,10 @@
         /// <param name="mediaType">Type of the media.</param>
         private MediaFrame(void* pointer, MediaComponent component, MediaType mediaType)
         {
+            // TODO: Check this.
             InternalPointer = new IntPtr(pointer);
-            StreamTimeBase = component.Stream->time_base;
-            StreamIndex = component.StreamIndex;
+            StreamTimeBase = component.Stream(0)->time_base;
+            StreamIndex = component.StreamIndexes[0];
             MediaType = mediaType;
         }
 

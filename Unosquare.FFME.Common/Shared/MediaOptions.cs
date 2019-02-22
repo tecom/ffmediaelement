@@ -98,7 +98,7 @@
         /// Initially contains the best suitable audio stream.
         /// Can be changed to a different stream reference.
         /// </summary>
-        public StreamInfo AudioStream { get; set; }
+        public StreamInfo[] AudioStream { get; set; }
 
         /// <summary>
         /// Initially contains the best suitable subtitle stream.

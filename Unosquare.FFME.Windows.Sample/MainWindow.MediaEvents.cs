@@ -148,10 +148,12 @@
 
             // An example of specifically selecting an audio stream
             var audioStreams = e.Info.Streams.Where(kvp => kvp.Value.CodecType == AVMediaType.AVMEDIA_TYPE_AUDIO).Select(kvp => kvp.Value);
-            var englishAudioStream = audioStreams.FirstOrDefault(s => s.Language != null && s.Language.ToLowerInvariant().StartsWith("en"));
-            if (englishAudioStream != null)
+            var twostreams = audioStreams.Take(2);
+            if (twostreams != null)
             {
-                e.Options.AudioStream = englishAudioStream;
+
+                e.Options.AudioStream = twostreams.ToArray();
+                e.Options.AudioFilter = "[in0][in1]amerge=inputs=2,pan=stereo|c0=c1|c1=c0";
             }
 
             // Setting Advanced Video Stream Options is also possible
@@ -285,7 +287,7 @@
             switch (StreamCycleMediaType)
             {
                 case MediaType.Audio:
-                    currentIndex = availableStreams.IndexOf(e.Options.AudioStream);
+                    currentIndex = availableStreams.IndexOf(e.Options.AudioStream.Last());
                     break;
 
                 case MediaType.Video:
@@ -308,7 +310,7 @@
             switch (StreamCycleMediaType)
             {
                 case MediaType.Audio:
-                    e.Options.AudioStream = newStream;
+                    e.Options.AudioStream = new[] { newStream };
                     break;
 
                 case MediaType.Video:

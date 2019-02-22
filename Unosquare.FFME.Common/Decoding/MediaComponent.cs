@@ -6,6 +6,7 @@
     using Shared;
     using System;
     using System.Globalization;
+    using System.Linq;
     using System.Runtime.CompilerServices;
 
     /// <inheritdoc />
@@ -52,12 +53,12 @@
         /// <summary>
         /// Holds a reference to the associated input context stream
         /// </summary>
-        private readonly IntPtr m_Stream;
+        private readonly IntPtr[] m_Streams;
 
         /// <summary>
         /// Holds a reference to the Codec Context.
         /// </summary>
-        private IntPtr m_CodecContext;
+        private IntPtr[] m_CodecContexts;
 
         #endregion
 
@@ -67,188 +68,195 @@
         /// Initializes a new instance of the <see cref="MediaComponent"/> class.
         /// </summary>
         /// <param name="container">The container.</param>
-        /// <param name="streamIndex">Index of the stream.</param>
+        /// <param name="streamIndexes">Index of the stream.</param>
         /// <exception cref="ArgumentNullException">container</exception>
         /// <exception cref="MediaContainerException">The container exception.</exception>
-        protected MediaComponent(MediaContainer container, int streamIndex)
+        protected MediaComponent(MediaContainer container, params int[] streamIndexes)
         {
             // Ported from: https://github.com/FFmpeg/FFmpeg/blob/master/fftools/ffplay.c#L2559
             Container = container ?? throw new ArgumentNullException(nameof(container));
-            m_LoggingHandler = ((ILoggingSource)Container).LoggingHandler;
-            m_CodecContext = new IntPtr(ffmpeg.avcodec_alloc_context3(null));
-            RC.Current.Add(CodecContext);
-            StreamIndex = streamIndex;
-            m_Stream = new IntPtr(container.InputContext->streams[streamIndex]);
-            StreamInfo = container.MediaInfo.Streams[streamIndex];
-
-            // Set default codec context options from probed stream
-            var setCodecParamsResult = ffmpeg.avcodec_parameters_to_context(CodecContext, Stream->codecpar);
-
-            if (setCodecParamsResult < 0)
+            m_LoggingHandler = ((ILoggingSource)Container).LoggingHandler;           
+            StreamIndexes = (int[])streamIndexes.Clone();
+            m_CodecContexts = new IntPtr[StreamIndexes.Length];
+            m_Streams = new IntPtr[StreamIndexes.Length];
+            StreamInfos = new StreamInfo[StreamIndexes.Length];
+            for (int i = 0; i < StreamIndexes.Length; i++)
             {
-                this.LogWarning(Aspects.Component,
-                    $"Could not set codec parameters. Error code: {setCodecParamsResult}");
-            }
+                m_CodecContexts[i] = new IntPtr(ffmpeg.avcodec_alloc_context3(null));
+                RC.Current.Add(CodecContext(i));
+                var streamIndex = StreamIndexes[i];
+                m_Streams[i] = new IntPtr(container.InputContext->streams[streamIndex]);
+                StreamInfos[i] = container.MediaInfo.Streams[streamIndex];
 
-            // We set the packet timebase in the same timebase as the stream as opposed to the typical AV_TIME_BASE
-            if (this is VideoComponent && Container.MediaOptions.VideoForcedFps > 0)
-            {
-                var fpsRational = ffmpeg.av_d2q(Container.MediaOptions.VideoForcedFps, 1000000);
-                Stream->r_frame_rate = fpsRational;
-                CodecContext->pkt_timebase = new AVRational { num = fpsRational.den, den = fpsRational.num };
-            }
-            else
-            {
-                CodecContext->pkt_timebase = Stream->time_base;
-            }
+                // Set default codec context options from probed stream
+                var setCodecParamsResult = ffmpeg.avcodec_parameters_to_context(CodecContext(i), Stream(i)->codecpar);
 
-            // Find the default decoder codec from the stream and set it.
-            var defaultCodec = ffmpeg.avcodec_find_decoder(Stream->codec->codec_id);
-            AVCodec* forcedCodec = null;
-
-            // If set, change the codec to the forced codec.
-            if (Container.MediaOptions.DecoderCodec.ContainsKey(StreamIndex) &&
-                string.IsNullOrWhiteSpace(Container.MediaOptions.DecoderCodec[StreamIndex]) == false)
-            {
-                var forcedCodecName = Container.MediaOptions.DecoderCodec[StreamIndex];
-                forcedCodec = ffmpeg.avcodec_find_decoder_by_name(forcedCodecName);
-                if (forcedCodec == null)
+                if (setCodecParamsResult < 0)
                 {
                     this.LogWarning(Aspects.Component,
-                        $"COMP {MediaType.ToString().ToUpperInvariant()}: " +
-                        $"Unable to set decoder codec to '{forcedCodecName}' on stream index {StreamIndex}");
+                        $"Could not set codec parameters. Error code: {setCodecParamsResult}");
                 }
-            }
 
-            // Check we have a valid codec to open and process the stream.
-            if (defaultCodec == null && forcedCodec == null)
-            {
-                var errorMessage = $"Fatal error. Unable to find suitable decoder for {Stream->codec->codec_id.ToString()}";
-                CloseComponent();
-                throw new MediaContainerException(errorMessage);
-            }
-
-            var codecCandidates = new[] { forcedCodec, defaultCodec };
-            AVCodec* selectedCodec = null;
-            var codecOpenResult = 0;
-
-            foreach (var codec in codecCandidates)
-            {
-                if (codec == null)
-                    continue;
-
-                // Pass default codec stuff to the codec context
-                CodecContext->codec_id = codec->id;
-
-                // Process the decoder options
+                // We set the packet timebase in the same timebase as the stream as opposed to the typical AV_TIME_BASE
+                if (this is VideoComponent && Container.MediaOptions.VideoForcedFps > 0)
                 {
-                    var decoderOptions = Container.MediaOptions.DecoderParams;
+                    var fpsRational = ffmpeg.av_d2q(Container.MediaOptions.VideoForcedFps, 1000000);
+                    Stream(i)->r_frame_rate = fpsRational;
+                    CodecContext(i)->pkt_timebase = new AVRational { num = fpsRational.den, den = fpsRational.num };
+                }
+                else
+                {
+                    CodecContext(i)->pkt_timebase = Stream(i)->time_base;
+                }
 
-                    // Configure the codec context flags
-                    if (decoderOptions.EnableFastDecoding) CodecContext->flags2 |= ffmpeg.AV_CODEC_FLAG2_FAST;
-                    if (decoderOptions.EnableLowDelayDecoding) CodecContext->flags |= ffmpeg.AV_CODEC_FLAG_LOW_DELAY;
+                // Find the default decoder codec from the stream and set it.
+                var defaultCodec = ffmpeg.avcodec_find_decoder(Stream(i)->codec->codec_id);
+                AVCodec* forcedCodec = null;
 
-                    // process the low res option
-                    if (decoderOptions.LowResolutionIndex != ResolutionDivider.Full && codec->max_lowres > 0)
+                // If set, change the codec to the forced codec.
+                if (Container.MediaOptions.DecoderCodec.ContainsKey(streamIndex) &&
+                    string.IsNullOrWhiteSpace(Container.MediaOptions.DecoderCodec[streamIndex]) == false)
+                {
+                    var forcedCodecName = Container.MediaOptions.DecoderCodec[streamIndex];
+                    forcedCodec = ffmpeg.avcodec_find_decoder_by_name(forcedCodecName);
+                    if (forcedCodec == null)
                     {
-                        var lowResOption = Math.Min((byte)decoderOptions.LowResolutionIndex, codec->max_lowres)
-                            .ToString(CultureInfo.InvariantCulture);
-                        decoderOptions.LowResIndexOption = lowResOption;
+                        this.LogWarning(Aspects.Component,
+                            $"COMP {MediaType.ToString().ToUpperInvariant()}: " +
+                            $"Unable to set decoder codec to '{forcedCodecName}' on stream index {streamIndex}");
+                    }
+                }
+
+                // Check we have a valid codec to open and process the stream.
+                if (defaultCodec == null && forcedCodec == null)
+                {
+                    var errorMessage = $"Fatal error. Unable to find suitable decoder for {Stream(i)->codec->codec_id.ToString()}";
+                    CloseComponent();
+                    throw new MediaContainerException(errorMessage);
+                }
+
+                var codecCandidates = new[] { forcedCodec, defaultCodec };
+                AVCodec* selectedCodec = null;
+                var codecOpenResult = 0;
+
+                foreach (var codec in codecCandidates)
+                {
+                    if (codec == null)
+                        continue;
+
+                    // Pass default codec stuff to the codec context
+                    CodecContext(i)->codec_id = codec->id;
+
+                    // Process the decoder options
+                    {
+                        var decoderOptions = Container.MediaOptions.DecoderParams;
+
+                        // Configure the codec context flags
+                        if (decoderOptions.EnableFastDecoding) CodecContext(i)->flags2 |= ffmpeg.AV_CODEC_FLAG2_FAST;
+                        if (decoderOptions.EnableLowDelayDecoding) CodecContext(i)->flags |= ffmpeg.AV_CODEC_FLAG_LOW_DELAY;
+
+                        // process the low res option
+                        if (decoderOptions.LowResolutionIndex != ResolutionDivider.Full && codec->max_lowres > 0)
+                        {
+                            var lowResOption = Math.Min((byte)decoderOptions.LowResolutionIndex, codec->max_lowres)
+                                .ToString(CultureInfo.InvariantCulture);
+                            decoderOptions.LowResIndexOption = lowResOption;
+                        }
+
+                        // Ensure ref counted frames for audio and video decoding
+                        if (CodecContext(i)->codec_type == AVMediaType.AVMEDIA_TYPE_VIDEO || CodecContext(i)->codec_type == AVMediaType.AVMEDIA_TYPE_AUDIO)
+                            decoderOptions.RefCountedFrames = "1";
                     }
 
-                    // Ensure ref counted frames for audio and video decoding
-                    if (CodecContext->codec_type == AVMediaType.AVMEDIA_TYPE_VIDEO || CodecContext->codec_type == AVMediaType.AVMEDIA_TYPE_AUDIO)
-                        decoderOptions.RefCountedFrames = "1";
-                }
+                    // Setup additional settings. The most important one is Threads -- Setting it to 1 decoding is very slow. Setting it to auto
+                    // decoding is very fast in most scenarios.
+                    var codecOptions = Container.MediaOptions.DecoderParams.GetStreamCodecOptions(Stream(i)->index);
 
-                // Setup additional settings. The most important one is Threads -- Setting it to 1 decoding is very slow. Setting it to auto
-                // decoding is very fast in most scenarios.
-                var codecOptions = Container.MediaOptions.DecoderParams.GetStreamCodecOptions(Stream->index);
+                    // Enable Hardware acceleration if requested
+                    (this as VideoComponent)?.AttachHardwareDevice(container.MediaOptions.VideoHardwareDevice);
 
-                // Enable Hardware acceleration if requested
-                (this as VideoComponent)?.AttachHardwareDevice(container.MediaOptions.VideoHardwareDevice);
+                    // Open the CodecContext. This requires exclusive FFmpeg access
+                    lock (CodecLock)
+                    {
+                        var codecOptionsRef = codecOptions.Pointer;
+                        codecOpenResult = ffmpeg.avcodec_open2(CodecContext(i), codec, &codecOptionsRef);
+                        codecOptions.UpdateReference(codecOptionsRef);
+                    }
 
-                // Open the CodecContext. This requires exclusive FFmpeg access
-                lock (CodecLock)
-                {
-                    var codecOptionsRef = codecOptions.Pointer;
-                    codecOpenResult = ffmpeg.avcodec_open2(CodecContext, codec, &codecOptionsRef);
-                    codecOptions.UpdateReference(codecOptionsRef);
-                }
+                    // Check if the codec opened successfully
+                    if (codecOpenResult < 0)
+                    {
+                        this.LogWarning(Aspects.Component,
+                            $"Unable to open codec '{FFInterop.PtrToStringUTF8(codec->name)}' on stream {streamIndexes}");
 
-                // Check if the codec opened successfully
-                if (codecOpenResult < 0)
-                {
-                    this.LogWarning(Aspects.Component,
-                        $"Unable to open codec '{FFInterop.PtrToStringUTF8(codec->name)}' on stream {streamIndex}");
+                        continue;
+                    }
 
-                    continue;
-                }
+                    // If there are any codec options left over from passing them, it means they were not consumed
+                    var currentEntry = codecOptions.First();
+                    while (currentEntry?.Key != null)
+                    {
+                        this.LogWarning(Aspects.Component,
+                            $"Invalid codec option: '{currentEntry.Key}' for codec '{FFInterop.PtrToStringUTF8(codec->name)}', stream {streamIndexes}");
+                        currentEntry = codecOptions.Next(currentEntry);
+                    }
 
-                // If there are any codec options left over from passing them, it means they were not consumed
-                var currentEntry = codecOptions.First();
-                while (currentEntry?.Key != null)
-                {
-                    this.LogWarning(Aspects.Component,
-                        $"Invalid codec option: '{currentEntry.Key}' for codec '{FFInterop.PtrToStringUTF8(codec->name)}', stream {streamIndex}");
-                    currentEntry = codecOptions.Next(currentEntry);
-                }
-
-                selectedCodec = codec;
-                break;
-            }
-
-            if (selectedCodec == null)
-            {
-                CloseComponent();
-                throw new MediaContainerException($"Unable to find suitable decoder codec for stream {streamIndex}. Error code {codecOpenResult}");
-            }
-
-            // Startup done. Set some options.
-            Stream->discard = AVDiscard.AVDISCARD_DEFAULT;
-            MediaType = (MediaType)CodecContext->codec_type;
-
-            switch (MediaType)
-            {
-                case MediaType.Audio:
-                case MediaType.Video:
-                    BufferCountThreshold = 25;
-                    BufferDurationThreshold = TimeSpan.FromSeconds(1);
-                    DecodePacketFunction = DecodeNextAVFrame;
+                    selectedCodec = codec;
                     break;
-                case MediaType.Subtitle:
+                }
+
+                if (selectedCodec == null)
+                {
+                    CloseComponent();
+                    throw new MediaContainerException($"Unable to find suitable decoder codec for stream {streamIndexes}. Error code {codecOpenResult}");
+                }
+
+                // Startup done. Set some options.
+                Stream(i)->discard = AVDiscard.AVDISCARD_DEFAULT;
+                MediaType = (MediaType)CodecContext(i)->codec_type;
+
+                switch (MediaType)
+                {
+                    case MediaType.Audio:
+                    case MediaType.Video:
+                        BufferCountThreshold = 25;
+                        BufferDurationThreshold = TimeSpan.FromSeconds(1);
+                        DecodePacketFunction = DecodeNextAVFrame;
+                        break;
+                    case MediaType.Subtitle:
+                        BufferCountThreshold = 0;
+                        BufferDurationThreshold = TimeSpan.Zero;
+                        DecodePacketFunction = DecodeNextAVSubtitle;
+                        break;
+                    default:
+                        throw new NotSupportedException($"A component of MediaType '{MediaType}' is not supported");
+                }
+
+                if (StreamInfos[i].IsAttachedPictureDisposition)
+                {
                     BufferCountThreshold = 0;
                     BufferDurationThreshold = TimeSpan.Zero;
-                    DecodePacketFunction = DecodeNextAVSubtitle;
-                    break;
-                default:
-                    throw new NotSupportedException($"A component of MediaType '{MediaType}' is not supported");
+                }
+
+                // Compute the start time
+                StartTime = Stream(i)->start_time == ffmpeg.AV_NOPTS_VALUE ?
+                    Container.MediaStartTime :
+                    Stream(i)->start_time.ToTimeSpan(Stream(i)->time_base);
+
+                // compute the duration
+                Duration = (Stream(i)->duration == ffmpeg.AV_NOPTS_VALUE || Stream(i)->duration <= 0) ?
+                    Container.MediaDuration :
+                    Stream(i)->duration.ToTimeSpan(Stream(i)->time_base);
+
+                CodecId = Stream(i)->codec->codec_id;
+                CodecName = FFInterop.PtrToStringUTF8(selectedCodec->name);
+                BitRate = Stream(i)->codec->bit_rate < 0 ? 0 : Stream(i)->codec->bit_rate;
+                this.LogDebug(Aspects.Component,
+                    $"{MediaType.ToString().ToUpperInvariant()}: Start Offset: {StartTime.Format()}; Duration: {Duration.Format()}");
+
+                // Begin processing with a flush packet
+                SendFlushPacket();
             }
-
-            if (StreamInfo.IsAttachedPictureDisposition)
-            {
-                BufferCountThreshold = 0;
-                BufferDurationThreshold = TimeSpan.Zero;
-            }
-
-            // Compute the start time
-            StartTime = Stream->start_time == ffmpeg.AV_NOPTS_VALUE ?
-                Container.MediaStartTime :
-                Stream->start_time.ToTimeSpan(Stream->time_base);
-
-            // compute the duration
-            Duration = (Stream->duration == ffmpeg.AV_NOPTS_VALUE || Stream->duration <= 0) ?
-                Container.MediaDuration :
-                Stream->duration.ToTimeSpan(Stream->time_base);
-
-            CodecId = Stream->codec->codec_id;
-            CodecName = FFInterop.PtrToStringUTF8(selectedCodec->name);
-            BitRate = Stream->codec->bit_rate < 0 ? 0 : Stream->codec->bit_rate;
-            this.LogDebug(Aspects.Component,
-                $"{MediaType.ToString().ToUpperInvariant()}: Start Offset: {StartTime.Format()}; Duration: {Duration.Format()}");
-
-            // Begin processing with a flush packet
-            SendFlushPacket();
         }
 
         #endregion
@@ -257,16 +265,6 @@
 
         /// <inheritdoc />
         ILoggingHandler ILoggingSource.LoggingHandler => m_LoggingHandler;
-
-        /// <summary>
-        /// Gets the pointer to the codec context.
-        /// </summary>
-        public AVCodecContext* CodecContext => (AVCodecContext*)m_CodecContext;
-
-        /// <summary>
-        /// Gets a pointer to the component's stream.
-        /// </summary>
-        public AVStream* Stream => (AVStream*)m_Stream;
 
         /// <summary>
         /// Gets the media container associated with this component.
@@ -281,7 +279,7 @@
         /// <summary>
         /// Gets the index of the associated stream.
         /// </summary>
-        public int StreamIndex { get; }
+        public int[] StreamIndexes { get; }
 
         /// <summary>
         /// Gets the component's stream start timestamp as reported
@@ -302,11 +300,6 @@
         /// this becomes too large.
         /// </summary>
         public long BufferLength => Packets.BufferLength;
-
-        /// <summary>
-        /// Gets the duration of the packet buffer.
-        /// </summary>
-        public TimeSpan BufferDuration => Packets.GetDuration(StreamInfo.TimeBase);
 
         /// <summary>
         /// Gets the number of packets in the queue.
@@ -332,18 +325,24 @@
         {
             get
             {
-                // We want to return true when we can't really get a buffer.
-                if (IsDisposed ||
-                    BufferCountThreshold <= 0 ||
-                    StreamInfo.IsAttachedPictureDisposition ||
-                    (Container?.IsReadAborted ?? false) ||
-                    (Container?.IsAtEndOfStream ?? false))
-                    return true;
+                bool result = true;
+                for (int i = 0; i < StreamInfos.Length; i++)
+                {
+                    // We want to return true when we can't really get a buffer.
+                    if (IsDisposed ||
+                        BufferCountThreshold <= 0 ||
+                        StreamInfos[i].IsAttachedPictureDisposition ||
+                        (Container?.IsReadAborted ?? false) ||
+                        (Container?.IsAtEndOfStream ?? false))
+                        return true;
 
-                // Enough packets means we have a duration of at least 1 second (if the packets report duration)
-                // and that we have enough of a packet count depending on the type of media
-                return (BufferDuration <= TimeSpan.Zero || BufferDuration.Ticks >= BufferDurationThreshold.Ticks) &&
-                    BufferCount >= BufferCountThreshold;
+                    // Enough packets means we have a duration of at least 1 second (if the packets report duration)
+                    // and that we have enough of a packet count depending on the type of media
+                    result &= (BufferDuration(i) <= TimeSpan.Zero || BufferDuration(i).Ticks >= BufferDurationThreshold.Ticks) &&
+                        BufferCount >= BufferCountThreshold;
+                }
+
+                return result;
             }
         }
 
@@ -366,7 +365,7 @@
         /// <summary>
         /// Gets the stream information.
         /// </summary>
-        public StreamInfo StreamInfo { get; }
+        public StreamInfo[] StreamInfos { get; }
 
         /// <summary>
         /// Gets whether packets have been fed into the codec and frames can be decoded.
@@ -391,6 +390,27 @@
         #region Methods
 
         /// <summary>
+        /// Gets the pointer to the codec context.
+        /// </summary>
+        /// <param name="index">index context</param>
+        /// <returns><see cref="AVCodecContext"/></returns>
+        public AVCodecContext* CodecContext(int index) => (AVCodecContext*)m_CodecContexts[index];
+
+        /// <summary>
+        /// Gets a pointer to the component's stream.
+        /// </summary>
+        /// <param name="index">index of stream</param>
+        /// <returns><see cref="AVStream"/></returns>
+        public AVStream* Stream(int index) => (AVStream*)m_Streams[index];
+        
+        /// <summary>
+        /// Gets the duration of the packet buffer.
+        /// </summary>
+        /// <param name="index">index of stream</param>
+        /// <returns><see cref="TimeSpan"/></returns>
+        public TimeSpan BufferDuration(int index) => Packets.GetDuration(StreamInfos[index].TimeBase);
+
+        /// <summary>
         /// Clears the pending and sent Packet Queues releasing all memory held by those packets.
         /// Additionally it flushes the codec buffered packets.
         /// </summary>
@@ -411,9 +431,10 @@
         /// that tells the decoder to refresh the attached picture or enter draining mode.
         /// This is a port of packet_queue_put_nullpacket
         /// </summary>
-        public void SendEmptyPacket()
+        /// <param name="index">index stream</param>
+        public void SendEmptyPacket(int index)
         {
-            var packet = MediaPacket.CreateEmptyPacket(Stream->index);
+            var packet = MediaPacket.CreateEmptyPacket(Stream(index)->index);
             SendPacket(packet);
         }
 
@@ -423,11 +444,12 @@
         /// 1 or more frames.
         /// </summary>
         /// <param name="packet">The packet.</param>
-        public void SendPacket(MediaPacket packet)
+        /// <param name="index">The index.</param>
+        public void SendPacket(MediaPacket packet, int index = 0)
         {
             if (packet == null)
             {
-                SendEmptyPacket();
+                SendEmptyPacket(index);
                 return;
             }
 
@@ -462,18 +484,23 @@
         /// </summary>
         /// <param name="framePointer">The raw FFmpeg pointer.</param>
         /// <returns>The media frame</returns>
-        protected abstract MediaFrame CreateFrameSource(IntPtr framePointer);
+        protected abstract MediaFrame CreateFrameSource(params IntPtr[] framePointer);
 
         /// <summary>
         /// Releases the existing codec context and clears and disposes the packet queues.
         /// </summary>
         protected void CloseComponent()
         {
-            if (m_CodecContext == IntPtr.Zero) return;
-            RC.Current.Remove(m_CodecContext);
-            var codecContext = CodecContext;
-            ffmpeg.avcodec_free_context(&codecContext);
-            m_CodecContext = IntPtr.Zero;
+            if (m_CodecContexts.All(ptr => ptr == IntPtr.Zero)) return;
+
+            for (int i = 0; i < StreamIndexes.Length; i++)
+            {
+                if (m_CodecContexts[i] == IntPtr.Zero) continue;
+                RC.Current.Remove(m_CodecContexts[i]);
+                var codecContext = CodecContext(i);
+                ffmpeg.avcodec_free_context(&codecContext);
+                m_CodecContexts[i] = IntPtr.Zero;
+            }          
 
             // free all the pending and sent packets
             ClearQueuedPackets(true);
@@ -499,10 +526,11 @@
         /// that tells the decoder to flush it internal buffers
         /// This an encapsulation of flush_pkt
         /// </summary>
+        /// <param name="index">index</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SendFlushPacket()
+        private void SendFlushPacket(int index = 0)
         {
-            var packet = MediaPacket.CreateFlushPacket(Stream->index);
+            var packet = MediaPacket.CreateFlushPacket(Stream(index)->index);
             SendPacket(packet);
         }
 
@@ -511,9 +539,12 @@
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void FlushCodecBuffers()
-        {
-            if (m_CodecContext != IntPtr.Zero)
-                ffmpeg.avcodec_flush_buffers(CodecContext);
+        {            
+            for (int i = 0; i < StreamIndexes.Length; i++)
+            {
+                if (m_CodecContexts[i] != IntPtr.Zero)
+                    ffmpeg.avcodec_flush_buffers(CodecContext(i));
+            }
 
             HasPacketsInCodec = false;
         }
@@ -546,8 +577,15 @@
 
                 // Send packet to the decoder but prevent null packets to be sent to it
                 // Null packets have never been detected but it's just a safeguard
+                int index;
+                for (index = 0; index < StreamIndexes.Length; index++)
+                {
+                    if (packet.StreamIndex == StreamIndexes[index])
+                        break;
+                }
+
                 sendPacketResult = packet.SafePointer != IntPtr.Zero
-                    ? ffmpeg.avcodec_send_packet(CodecContext, packet.Pointer) : -ffmpeg.EINVAL;
+                    ? ffmpeg.avcodec_send_packet(CodecContext(index), packet.Pointer) : -ffmpeg.EINVAL;
 
                 // EAGAIN means we have filled the decoder buffer
                 if (sendPacketResult != -ffmpeg.EAGAIN)
@@ -583,14 +621,21 @@
             MediaFrame managedFrame = null;
             receiveFrameResult = 0;
 
-            var outputFrame = MediaFrame.CreateAVFrame();
-            receiveFrameResult = ffmpeg.avcodec_receive_frame(CodecContext, outputFrame);
+            var inputFrames = new IntPtr[StreamIndexes.Length];
+            for (int i = 0; i < StreamIndexes.Length; i++)
+            {
+                inputFrames[i] = (IntPtr)MediaFrame.CreateAVFrame();
+                receiveFrameResult = ffmpeg.avcodec_receive_frame(CodecContext(i), (AVFrame*)inputFrames[i]);
+            }
 
             if (receiveFrameResult >= 0)
-                managedFrame = CreateFrameSource(new IntPtr(outputFrame));
+                managedFrame = CreateFrameSource(inputFrames);
 
             if (managedFrame == null)
-                MediaFrame.ReleaseAVFrame(outputFrame);
+            {
+                foreach (var frame in inputFrames)
+                    MediaFrame.ReleaseAVFrame((AVFrame*)frame);
+            }
 
             if (receiveFrameResult == ffmpeg.AVERROR_EOF)
                 FlushCodecBuffers();
@@ -642,10 +687,10 @@
             // For subtitles we use the old API (new API send_packet/receive_frame) is not yet available
             // We first try to flush anything we've already sent by using an empty packet.
             MediaFrame managedFrame = null;
-            var packet = MediaPacket.CreateEmptyPacket(Stream->index);
+            var packet = MediaPacket.CreateEmptyPacket(Stream(0)->index);
             var gotFrame = 0;
             var outputFrame = MediaFrame.CreateAVSubtitle();
-            var receiveFrameResult = ffmpeg.avcodec_decode_subtitle2(CodecContext, outputFrame, &gotFrame, packet.Pointer);
+            var receiveFrameResult = ffmpeg.avcodec_decode_subtitle2(CodecContext(0), outputFrame, &gotFrame, packet.Pointer);
 
             // If we don't get a frame from flushing. Feed the packet into the decoder and try getting a frame.
             if (gotFrame == 0)
@@ -658,7 +703,7 @@
                 if (packet != null)
                 {
                     Container.Components.ProcessPacketQueueChanges(PacketQueueOp.Dequeued, packet, MediaType);
-                    receiveFrameResult = ffmpeg.avcodec_decode_subtitle2(CodecContext, outputFrame, &gotFrame, packet.Pointer);
+                    receiveFrameResult = ffmpeg.avcodec_decode_subtitle2(CodecContext(0), outputFrame, &gotFrame, packet.Pointer);
                 }
             }
 

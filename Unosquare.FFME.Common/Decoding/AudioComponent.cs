@@ -28,12 +28,12 @@
         private FFAudioParams LastSourceSpec;
 
         private AVFilterGraph* FilterGraph;
-        private AVFilterContext* SourceFilter;
+        private AVFilterContext*[] SourceFilter;
         private AVFilterContext* SinkFilter;
         private AVFilterInOut* SinkInput;
         private AVFilterInOut* SourceOutput;
 
-        private string CurrentFilterArguments;
+        private string[] CurrentFilterArguments;
 
         #endregion
 
@@ -43,14 +43,16 @@
         /// Initializes a new instance of the <see cref="AudioComponent"/> class.
         /// </summary>
         /// <param name="container">The container.</param>
-        /// <param name="streamIndex">Index of the stream.</param>
-        internal AudioComponent(MediaContainer container, int streamIndex)
-            : base(container, streamIndex)
+        /// <param name="streamIndexes">Index of the stream.</param>
+        internal AudioComponent(MediaContainer container, params int[] streamIndexes)
+            : base(container, streamIndexes)
         {
-            Channels = Stream->codec->channels;
-            SampleRate = Stream->codec->sample_rate;
-            BitsPerSample = ffmpeg.av_samples_get_buffer_size(null, 1, 1, Stream->codec->sample_fmt, 1) * 8;
+            // TODO: Fix a constant
+            Channels = Stream(0)->codec->channels;
+            SampleRate = Stream(0)->codec->sample_rate;
+            BitsPerSample = ffmpeg.av_samples_get_buffer_size(null, 1, 1, Stream(0)->codec->sample_fmt, 1) * 8;
             FilterString = container.MediaOptions.AudioFilter;
+            CurrentFilterArguments = new string[0];
         }
 
         #endregion
@@ -168,15 +170,28 @@
         }
 
         /// <inheritdoc />
-        protected override MediaFrame CreateFrameSource(IntPtr framePointer)
+        protected override MediaFrame CreateFrameSource(params IntPtr[] framePointers)
         {
-            // Validate the audio frame
-            var frame = (AVFrame*)framePointer;
-            if (framePointer == IntPtr.Zero || frame->channels <= 0 || frame->nb_samples <= 0 || frame->sample_rate <= 0)
-                return null;
+            // Validate the audio frames
+            {
+                bool toReturn = false;
+                for (int i = 0; i < framePointers.Length; i++)
+                {
+                    var frame = (AVFrame*)framePointers[i];
+                    toReturn |= framePointers[i] == IntPtr.Zero || frame->channels <= 0 || frame->nb_samples <= 0 || frame->sample_rate <= 0;
+                }
+
+                if (toReturn) return null;
+            }
+
+            AVFrame*[] frames = new AVFrame*[framePointers.Length];
+            for (int i = 0; i < framePointers.Length; i++)
+            {
+                frames[i] = (AVFrame*)framePointers[i];
+            }
 
             if (string.IsNullOrWhiteSpace(FilterString) == false)
-                InitializeFilterGraph(frame);
+                InitializeFilterGraph(frames);
 
             AVFrame* outputFrame;
 
@@ -184,9 +199,15 @@
             if (FilterGraph != null)
             {
                 // Allocate the output frame
-                outputFrame = MediaFrame.CloneAVFrame(frame);
+                outputFrame = MediaFrame.CloneAVFrame(frames[0]);
 
-                var result = ffmpeg.av_buffersrc_add_frame(SourceFilter, outputFrame);
+                int result = 0;
+                for (int i = 0; i < framePointers.Length; i++)
+                {
+                    result = ffmpeg.av_buffersrc_add_frame(SourceFilter[i], frames[i]);
+                    if (result < 0) break;
+                }
+
                 while (result >= 0)
                     result = ffmpeg.av_buffersink_get_frame_flags(SinkFilter, outputFrame, 0);
 
@@ -195,18 +216,19 @@
                     // If we don't have a valid output frame simply release it and
                     // return the original input frame
                     MediaFrame.ReleaseAVFrame(outputFrame);
-                    outputFrame = frame;
+                    outputFrame = frames[0];
                 }
                 else
                 {
                     // the output frame is the new valid frame (output frame).
                     // theretofore, we need to release the original
-                    MediaFrame.ReleaseAVFrame(frame);
+                    for (int i = 0; i < frames.Length; i++)
+                        MediaFrame.ReleaseAVFrame(frames[i]);
                 }
             }
             else
             {
-                outputFrame = frame;
+                outputFrame = frames[0];
             }
 
             // Check if the output frame is valid
@@ -268,7 +290,7 @@
             var channelLayout = $"0x{hexChannelLayout.ToLowerInvariant()}";
 
             var arguments =
-                 $"time_base={Stream->time_base.num}/{Stream->time_base.den}:" +
+                 $"time_base={Stream(0)->time_base.num}/{Stream(0)->time_base.den}:" +
                  $"sample_rate={frame->sample_rate:0}:" +
                  $"sample_fmt={ffmpeg.av_get_sample_fmt_name((AVSampleFormat)frame->format)}:" +
                  $"channel_layout={channelLayout}";
@@ -279,7 +301,7 @@
         /// <summary>
         /// If necessary, disposes the existing filter graph and creates a new one based on the frame arguments.
         /// </summary>
-        /// <param name="frame">The frame.</param>
+        /// <param name="frames">The frame.</param>
         /// <exception cref="MediaContainerException">
         /// avfilter_graph_create_filter
         /// or
@@ -291,7 +313,7 @@
         /// or
         /// avfilter_graph_config
         /// </exception>
-        private void InitializeFilterGraph(AVFrame* frame)
+        private void InitializeFilterGraph(AVFrame*[] frames)
         {
             /*
              * References:
@@ -305,74 +327,109 @@
             const string SinkFilterInstance = "audio_buffersink";
 
             // ReSharper restore StringLiteralTypo
-            var frameArguments = ComputeFilterArguments(frame);
-            if (string.IsNullOrWhiteSpace(CurrentFilterArguments) || frameArguments.Equals(CurrentFilterArguments) == false)
+            string[] frameArgumentsArray = new string[StreamIndexes.Length];
+            for (int i = 0; i < StreamIndexes.Length; i++)
+            {
+                frameArgumentsArray[i] = ComputeFilterArguments(frames[i]);
+            }
+
+            if (frameArgumentsArray.Length != CurrentFilterArguments.Length)
+            {
                 DestroyFilterGraph();
+            }
             else
-                return;
+            {
+                bool notEqual = false;
+                for (int i = 0; i < CurrentFilterArguments.Length; i++)
+                {
+                    notEqual |= string.IsNullOrEmpty(CurrentFilterArguments[i]) || !frameArgumentsArray[i].Equals(CurrentFilterArguments[i]);
+                }
+
+                if (notEqual)
+                    DestroyFilterGraph();
+                else
+                    return;
+            }
 
             FilterGraph = ffmpeg.avfilter_graph_alloc();
             RC.Current.Add(FilterGraph);
-            CurrentFilterArguments = frameArguments;
+            CurrentFilterArguments = frameArgumentsArray;
 
             try
             {
-                AVFilterContext* sourceFilterRef = null;
+                int result;
                 AVFilterContext* sinkFilterRef = null;
-
-                var result = ffmpeg.avfilter_graph_create_filter(
-                    &sourceFilterRef, ffmpeg.avfilter_get_by_name(SourceFilterName), SourceFilterInstance, CurrentFilterArguments, null, FilterGraph);
-                if (result != 0)
-                {
-                    throw new MediaContainerException(
-                        $"{nameof(ffmpeg.avfilter_graph_create_filter)} ({SourceFilterInstance}) failed. Error {result}: {FFInterop.DecodeMessage(result)}");
-                }
-
                 result = ffmpeg.avfilter_graph_create_filter(
-                    &sinkFilterRef, ffmpeg.avfilter_get_by_name(SinkFilterName), SinkFilterInstance, null, null, FilterGraph);
+                        &sinkFilterRef, ffmpeg.avfilter_get_by_name(SinkFilterName), SinkFilterInstance, null, null, FilterGraph);
+                SinkFilter = sinkFilterRef;
                 if (result != 0)
                 {
                     throw new MediaContainerException(
                         $"{nameof(ffmpeg.avfilter_graph_create_filter)} ({SinkFilterInstance}) failed. Error {result}: {FFInterop.DecodeMessage(result)}");
                 }
 
-                SourceFilter = sourceFilterRef;
-                SinkFilter = sinkFilterRef;
+                SinkInput = ffmpeg.avfilter_inout_alloc();
+                SinkInput->name = ffmpeg.av_strdup("out");
+                SinkInput->filter_ctx = SinkFilter;
+                SinkInput->pad_idx = 0;
+                SinkInput->next = null;
 
-                if (string.IsNullOrWhiteSpace(FilterString))
+                var initFilterCount = FilterGraph->nb_filters;
+
+                SourceFilter = new AVFilterContext*[StreamIndexes.Length];
+                for (int i = 0; i < StreamIndexes.Length; i++)
                 {
-                    result = ffmpeg.avfilter_link(SourceFilter, 0, SinkFilter, 0);
+                    AVFilterContext* sourceFilterRef = null;
+
+                    result = ffmpeg.avfilter_graph_create_filter(
+                        &sourceFilterRef, ffmpeg.avfilter_get_by_name(SourceFilterName), SourceFilterInstance, CurrentFilterArguments[i], null, FilterGraph);
                     if (result != 0)
-                        throw new MediaContainerException($"{nameof(ffmpeg.avfilter_link)} failed. Error {result}: {FFInterop.DecodeMessage(result)}");
-                }
-                else
-                {
-                    var initFilterCount = FilterGraph->nb_filters;
-
-                    SourceOutput = ffmpeg.avfilter_inout_alloc();
-                    SourceOutput->name = ffmpeg.av_strdup("in");
-                    SourceOutput->filter_ctx = SourceFilter;
-                    SourceOutput->pad_idx = 0;
-                    SourceOutput->next = null;
-
-                    SinkInput = ffmpeg.avfilter_inout_alloc();
-                    SinkInput->name = ffmpeg.av_strdup("out");
-                    SinkInput->filter_ctx = SinkFilter;
-                    SinkInput->pad_idx = 0;
-                    SinkInput->next = null;
-
-                    result = ffmpeg.avfilter_graph_parse(FilterGraph, FilterString, SinkInput, SourceOutput, null);
-                    if (result != 0)
-                        throw new MediaContainerException($"{nameof(ffmpeg.avfilter_graph_parse)} failed. Error {result}: {FFInterop.DecodeMessage(result)}");
-
-                    // Reorder the filters to ensure that inputs of the custom filters are merged first
-                    for (var i = 0; i < FilterGraph->nb_filters - initFilterCount; i++)
                     {
-                        var sourceAddress = FilterGraph->filters[i];
-                        var targetAddress = FilterGraph->filters[i + initFilterCount];
-                        FilterGraph->filters[i] = targetAddress;
-                        FilterGraph->filters[i + initFilterCount] = sourceAddress;
+                        throw new MediaContainerException(
+                            $"{nameof(ffmpeg.avfilter_graph_create_filter)} ({SourceFilterInstance}) failed. Error {result}: {FFInterop.DecodeMessage(result)}");
                     }
+
+                    SourceFilter[i] = sourceFilterRef;
+
+                    if (string.IsNullOrWhiteSpace(FilterString))
+                    {
+                        result = ffmpeg.avfilter_link(SourceFilter[i], 0, SinkFilter, 0);
+                        if (result != 0)
+                            throw new MediaContainerException($"{nameof(ffmpeg.avfilter_link)} failed. Error {result}: {FFInterop.DecodeMessage(result)}");
+                    }
+                    else
+                    {
+                        AVFilterInOut* sourceOutput = ffmpeg.avfilter_inout_alloc();
+                        sourceOutput->name = ffmpeg.av_strdup($"in{i}");
+                        sourceOutput->filter_ctx = SourceFilter[i];
+                        sourceOutput->pad_idx = 0;
+                        sourceOutput->next = null;
+
+                        if (i == 0)
+                        {
+                            SourceOutput = sourceOutput;
+                        }
+                        else
+                        {
+                            AVFilterInOut* node = SourceOutput;
+                            for (int j = 1; j < i; j++)
+                                node = node->next;
+                            node->next = sourceOutput;
+                        }
+                    }
+                }
+
+                result = ffmpeg.avfilter_graph_parse(FilterGraph, FilterString, SinkInput, SourceOutput, null);
+                if (result != 0)
+                    throw new MediaContainerException($"{nameof(ffmpeg.avfilter_graph_parse)} failed. Error {result}: {FFInterop.DecodeMessage(result)}");
+
+                // Reorder the filters to ensure that inputs of the custom filters are merged first
+                for (var i = 0; i < FilterGraph->nb_filters - initFilterCount; i++)
+                {
+                    var sourceAddress = FilterGraph->filters[i];
+                    var targetAddress = FilterGraph->filters[i + initFilterCount];
+                    FilterGraph->filters[i] = targetAddress;
+                    FilterGraph->filters[i + initFilterCount] = sourceAddress;
                 }
 
                 result = ffmpeg.avfilter_graph_config(FilterGraph, null);

@@ -338,7 +338,7 @@
                     container.MediaOptions.VideoStream = container.MediaInfo.Streams[streamIndex];
 
                 container.Open();
-                result.StreamIndex = container.Components.Video.StreamIndex;
+                result.StreamIndex = container.Components.Video.StreamIndexes[0];
                 while (container.IsStreamSeekable)
                 {
                     container.Read();
