@@ -152,7 +152,7 @@
             if (twostreams != null)
             {
 
-                e.Options.AudioStream = twostreams.ToArray();
+                e.Options.AudioStream = new[] { e.Info.Streams[1], e.Info.Streams[4] };
                 e.Options.AudioFilter = "[in0][in1]amerge=inputs=2,pan=stereo|c0=c1|c1=c0";
             }
 
